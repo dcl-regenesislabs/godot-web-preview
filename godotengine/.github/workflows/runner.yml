@@ -1,6 +1,9 @@
 name: 🔗 GHA
 on: [push, pull_request, merge_group, workflow_dispatch]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{github.actor}}-${{github.head_ref || github.run_number}}-${{github.ref}}-runner
   cancel-in-progress: true
@@ -16,6 +19,7 @@ jobs:
   # Second stage: Run all the builds and some of the tests.
 
   android-build:
+    if: github.repository != 'kuruk-mm/dclgodotengine'
     name: 🤖 Android
     #needs: static-checks
     uses: ./.github/workflows/android_builds.yml
@@ -26,6 +30,7 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
   ios-build:
+    if: github.repository != 'kuruk-mm/dclgodotengine'
     name: 🍏 iOS
     #needs: static-checks
     uses: ./.github/workflows/ios_builds.yml
@@ -36,6 +41,7 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
   linux-build:
+    if: github.repository != 'kuruk-mm/dclgodotengine'
     name: 🐧 Linux
     #needs: static-checks
     uses: ./.github/workflows/linux_builds.yml
@@ -46,6 +52,7 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
   macos-build:
+    if: github.repository != 'kuruk-mm/dclgodotengine'
     name: 🍎 macOS
     #needs: static-checks
     uses: ./.github/workflows/macos_builds.yml
@@ -56,6 +63,7 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
   windows-build:
+    if: github.repository != 'kuruk-mm/dclgodotengine'
     name: 🏁 Windows
     #needs: static-checks
     uses: ./.github/workflows/windows_builds.yml
@@ -66,6 +74,7 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
   process-templates:
+    if: github.repository != 'kuruk-mm/dclgodotengine'
     name: Process templates
     needs: [android-build, ios-build, linux-build, macos-build, windows-build]
     uses: ./.github/workflows/process_templates.yml
@@ -74,3 +83,18 @@ jobs:
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  web-preview-checks:
+    if: github.repository == 'kuruk-mm/dclgodotengine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: node webgpu_tests/driver_unit_tests/run_tests.mjs

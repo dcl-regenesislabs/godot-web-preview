@@ -43,7 +43,11 @@ def get_opts():
         # Matches default values from before Emscripten 3.1.27. New defaults are too low for Godot.
         ("stack_size", "WASM stack size (in KiB)", 5120),
         ("default_pthread_stack_size", "WASM pthread default stack size (in KiB)", 2048),
-        BoolVariable("use_assertions", "Use Emscripten runtime assertions", False),
+        (
+            "use_assertions",
+            "Use Emscripten runtime assertions (auto, no, yes, extra)",
+            "auto",
+        ),
         BoolVariable("use_ubsan", "Use Emscripten undefined behavior sanitizer (UBSAN)", False),
         BoolVariable("use_asan", "Use Emscripten address sanitizer (ASAN)", False),
         BoolVariable("use_lsan", "Use Emscripten leak sanitizer (LSAN)", False),
@@ -60,6 +64,7 @@ def get_opts():
             False,
         ),
         BoolVariable("wasm_simd", "Use WebAssembly SIMD to improve CPU performance", True),
+        BoolVariable("webgpu_precompile_shaders", "Precompile WebGPU shaders using native host tools", True),
     ]
 
 
@@ -89,6 +94,7 @@ def get_flags():
         # run-time performance.
         # Note that this overrides the "auto" behavior for target/dev_build.
         "optimize": "size",
+        "supported": ["webgpu"],
     }
 
 
@@ -141,14 +147,19 @@ def configure(env: "SConsEnvironment"):
 
     ## Build type
 
-    if env.debug_features:
+    ## Configure assertions.
+    if env["use_assertions"] == "auto":
+        env["use_assertions"] = "yes" if env.debug_features else "no"
+    if env["use_assertions"] == "yes":
+        print_info("Building with runtime assertions.")
+        env.Append(LINKFLAGS=["-sASSERTIONS=1"])
+    elif env["use_assertions"] == "extra":
+        print_info("Building with runtime assertions with extra tests.")
+        env.Append(LINKFLAGS=["-sASSERTIONS=2"])
+
+    if env["debug_symbols"]:
         # Retain function names for backtraces at the cost of file size.
         env.Append(LINKFLAGS=["--profiling-funcs"])
-    else:
-        env["use_assertions"] = True
-
-    if env["use_assertions"]:
-        env.Append(LINKFLAGS=["-sASSERTIONS=1"])
 
     if env.editor_build and env["initial_memory"] < 64:
         print_info("Forcing `initial_memory=64` as it is required for the web editor.")
@@ -257,6 +268,13 @@ def configure(env: "SConsEnvironment"):
         # See https://emscripten.org/docs/tools_reference/settings_reference.html#gl-enable-get-proc-address
         env.Append(LINKFLAGS=["-sGL_ENABLE_GET_PROC_ADDRESS=0"])
 
+    if env["webgpu"]:
+        env.AppendUnique(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
+        # Emscripten 4.0.10+ uses the emdawnwebgpu port; -sUSE_WEBGPU=1 was removed in 5.0.
+        # Pass --use-port=emdawnwebgpu to both CCFLAGS (for headers) and LINKFLAGS (for JS glue).
+        env.Append(CCFLAGS=["--use-port=emdawnwebgpu"])
+        env.Append(LINKFLAGS=["--use-port=emdawnwebgpu"])
+
     if env["javascript_eval"]:
         env.Append(CPPDEFINES=["JAVASCRIPT_EVAL_ENABLED"])
 
@@ -324,6 +342,11 @@ def configure(env: "SConsEnvironment"):
     # us since we don't know requirements at compile-time.
     env.Append(LINKFLAGS=["-sALLOW_MEMORY_GROWTH=1"])
 
+    # Ensure malloc returns NULL on failure instead of aborting. Emscripten
+    # sets this automatically when ALLOW_MEMORY_GROWTH=1, but being explicit
+    # prevents regressions if the default ever changes and documents intent.
+    env.Append(LINKFLAGS=["-sABORTING_MALLOC=0"])
+
     # Do not call main immediately when the support code is ready.
     env.Append(LINKFLAGS=["-sINVOKE_RUN=0"])
 
@@ -333,7 +356,8 @@ def configure(env: "SConsEnvironment"):
         "HEAPF32",
         "HEAPF64",
     ]
-    env["EXPORTED_RUNTIME_METHODS"] += ["callMain", "cwrap"] + heap_arrays
+    # FS: read by tools measuring the in-memory file system (user:// content cache)
+    env["EXPORTED_RUNTIME_METHODS"] += ["callMain", "cwrap", "FS"] + heap_arrays
     env["EXPORTED_FUNCTIONS"] += ["_malloc", "_free"]
 
     # Add code that allow exiting runtime.
