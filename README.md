@@ -10,8 +10,8 @@ lights, avatars and the scene's own UI, at a steady 30 fps in Chrome on a Mac.
 ## Try it
 
 ```bash
-git clone --recursive https://github.com/kuruk-mm/test-godot-web.git
-cd test-godot-web
+git clone https://github.com/dcl-regenesislabs/godot-web-preview.git
+cd godot-web-preview
 ./build.sh
 node godot-explorer/web/tools/serve-web.mjs godot-explorer/build/web 8060
 ```
@@ -21,12 +21,8 @@ as a guest.
 
 ### What you need
 
-- **Access** to three private repos:
-  - `kuruk-mm/test-godot-web` (this one)
-  - `kuruk-mm/godot-explorer-test`
-  - `kuruk-mm/dclgodotengine`
-
-  The last two are pulled in automatically, so the clone fails without access to them.
+- **Access** to this repository. Engine and explorer sources are included as Git
+  subtrees; no access to separate private source repositories is needed.
 - **A Mac** (tested on Apple Silicon). Linux will probably work but is untested; Windows isn't supported.
 - **These tools:**
   - Xcode Command Line Tools: `xcode-select --install`
@@ -209,7 +205,7 @@ callbacks, including the first press after startup, separately from client HUD b
 ## Continuous integration
 
 The `Mobile preview` workflow runs on pull requests and main pushes. It builds on macOS
-from the exact submodule commits, runs the protocol/export/server checks, and uploads the
+from the committed source trees, runs the protocol/export/server checks, and uploads the
 web export and graphics fixtures. A Linux job runs Chromium under Xvfb with Mesa and
 SwiftShader, requiring explicit PASS results for texture serialization, buffer coherence
 and frame pacing. It also requires a WebGPU renderer, completed GPU work and no engine/browser/GPU
@@ -221,14 +217,29 @@ without uploading the dependency inventory. Three maintenance-only notices are d
 `.github/osv-scanner.toml` and expire on November 15, 2026. Security findings fail the workflow;
 every source CI build runs this check before the package can be published.
 
-Add a repository secret named `GODOT_SOURCE_TOKEN` with read-only Contents access to this
-repository and both private source submodules. Checkout does not persist the credential.
-Push the source submodule branches first, then the parent branch with their committed
-pointers; the source commits must be fetchable before parent CI can run. After the build,
+Checkout uses the repository's temporary GitHub token and does not persist it. No
+`GODOT_SOURCE_TOKEN` or coordinated source-repository pushes are needed. After the build,
 offline audit and browser assertions pass, CI prepares the npm tarball. Matching stable
 `vX.Y.Z` tags publish to npm with OIDC through the `production` environment; all other runs
 only validate. Consumers pin an npm version and need no private source token. Nothing
 deploys an application. See [trusted publisher setup](packages/runtime/README.md).
+
+## Keeping up with mobile
+
+Engine and explorer changes are committed together in this repository. The imported
+upstream revisions live in `upstreams.json`; browser modifications remain separate
+from the subtree import commits. The daily updater opens a draft PR when the mobile
+explorer changes, follows its expected engine revision, and starts validation. It
+does not merge or release automatically, and it leaves existing sync PRs for review.
+
+```sh
+git switch -c chore/update-mobile-upstreams
+node scripts/upstream.mjs check
+node scripts/upstream.mjs sync
+```
+
+See [upstream updates and conflict handling](docs/UPSTREAMS.md) and the
+[source migration and first release setup](docs/MIGRATION.md).
 
 For a local browser assertion after exporting a fixture:
 

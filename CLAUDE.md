@@ -27,8 +27,8 @@ Guidance for working in this repo: the Decentraland Godot explorer running in th
 
 | Path | What |
 |---|---|
-| `godot-explorer/` | Submodule → `kuruk-mm/godot-explorer-test`, branch `main` |
-| `godotengine/` | Submodule → `kuruk-mm/dclgodotengine`, branch `main` |
+| `godot-explorer/` | Git subtree from `decentraland/godot-explorer`, with browser changes |
+| `godotengine/` | Git subtree from `decentraland/godotengine` on `4.6.2`, with WebGPU changes |
 | `emsdk/` | Submodule → `emscripten-core/emsdk`. `build.sh` installs Emscripten 4.0.11 into it and patches it |
 | `tests/` | `webgpu-smoke*` and `webgpu-mat`: small 3D scenes that print the driver and fps (`SMOKE ...` lines). `gdext-hello`: a minimal Rust GDExtension built for wasm, used by `webgpu-smoke-min` |
 | `build.sh` | Every engine/runtime build step |
@@ -140,18 +140,18 @@ written against a trait and run in a second wasm inside each Worker
 
 ## Committing
 
-Changes inside `godot-explorer/` or `godotengine/` are commits in that submodule:
-
-1. Commit and push there first (branch `main`).
-2. Commit the updated submodule pointer here.
-
-Never commit `build/`, `bin/` or `target/` output. Keep user instructions about committing or
-pushing authoritative; submodule edits and the parent pointer are separate Git changes.
+Changes inside `godot-explorer/` or `godotengine/` are ordinary commits in this
+repository. Use a feature branch and keep upstream imports separate from browser
+changes. Run `node scripts/upstream.mjs sync` for upstream updates; see
+`docs/UPSTREAMS.md` for pairing and conflict handling. Never commit `build/`, `bin/`
+or `target/` output. User instructions about committing or pushing are authoritative.
 
 ## Known gaps
 
-- **Scene APIs:** restricted actions and portable experiences are not bridged yet.
-  Local preview scene messages use browser LiveKit; world comms are still unavailable.
+- **Scene APIs:** gameplay movement, emotes, confirmation dialogs, events, world time
+  and locale are supported. Portable experiences, file reads and wallet utilities
+  remain excluded. Local preview scene messages use browser LiveKit; Pulse carries
+  player state through WebTransport.
 - **Compiled out:** native voice/LiveKit, video, and Sentry. Pulse uses browser WebTransport.
 - **Content cache:** it lives in memory (Emscripten MEMFS).
 - **CORS:** `marketing-files.decentraland.org` only allows `https://decentraland.org`, so in-world banners

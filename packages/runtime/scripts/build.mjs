@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { readUpstreams } from '../../../scripts/upstream.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const workspace = path.resolve(root, '../..')
@@ -17,10 +18,11 @@ const git = (...args) => execFileSync('git', args, { cwd: workspace, encoding: '
 const manifest = {
   version: JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version,
   source: {
-    repository: 'kuruk-mm/test-godot-web',
+    repository: 'dcl-regenesislabs/godot-web-preview',
     revision: git('rev-parse', 'HEAD'),
-    explorer: git('rev-parse', 'HEAD:godot-explorer'),
-    engine: git('rev-parse', 'HEAD:godotengine')
+    explorerTree: git('rev-parse', 'HEAD:godot-explorer'),
+    engineTree: git('rev-parse', 'HEAD:godotengine'),
+    upstreams: readUpstreams(workspace).sources
   },
   files: {}
 }

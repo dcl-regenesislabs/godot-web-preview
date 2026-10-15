@@ -6,7 +6,7 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kuruk-mm/test-godot-web.git",
+    "url": "https://github.com/dcl-regenesislabs/godot-web-preview.git",
     "directory": "packages/runtime"
   },
   "files": [

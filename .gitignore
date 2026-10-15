@@ -1,4 +1,4 @@
-# Only the files listed here are tracked; the three folders below are submodules.
+# Keep generated output outside the source tree.
 /*
 !/.gitignore
 !/.gitmodules
@@ -12,6 +12,9 @@
 !/scripts
 !/.github
 !/packages
+!/docs
+!/upstreams.json
+!/AGENTS.md
 /packages/*/dist/
 /packages/*/*.tgz
 

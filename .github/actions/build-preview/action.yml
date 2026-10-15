@@ -2,7 +2,7 @@ name: Build mobile web runtime
 description: Build the pinned engine, Rust extension, content and regression scenes
 inputs:
   directory:
-    description: Checkout of test-godot-web, relative to the workspace
+    description: Checkout of godot-web-preview, relative to the workspace
     default: '.'
 runs:
   using: composite
@@ -31,7 +31,7 @@ runs:
       id: engine
       shell: bash
       working-directory: ${{ inputs.directory }}
-      run: echo "revision=$(git -C godotengine rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      run: echo "revision=$(git rev-parse HEAD:godotengine)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache@v4
       id: template
       with:

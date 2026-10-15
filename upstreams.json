@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "sources": {
+    "engine": {
+      "path": "godotengine",
+      "repository": "https://github.com/decentraland/godotengine.git",
+      "branch": "4.6.2",
+      "revision": "bda49b71bf46b2362f38dccd7fdfacbaa1593b70"
+    },
+    "explorer": {
+      "path": "godot-explorer",
+      "repository": "https://github.com/decentraland/godot-explorer.git",
+      "branch": "main",
+      "revision": "cada2d93da933ffe832a31ae370308a0bc1a6712"
+    }
+  }
+}

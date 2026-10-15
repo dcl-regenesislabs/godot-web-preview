@@ -1,0 +1,81 @@
+name: Sync mobile upstreams
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sync-mobile-upstreams
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Leave pending sync PRs for review
+        id: pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh pr list --state open --base main --json headRefName --jq '[.[] | select(.headRefName | startswith("chore/sync-upstream-"))] | length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" != 0 ]; then echo 'An upstream sync PR is already waiting for review.' >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Import the compatible mobile sources
+        if: steps.pending.outputs.count == '0'
+        id: sync
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          branch="chore/sync-upstream-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git switch -c "$branch"
+          node scripts/upstream.mjs sync > "$RUNNER_TEMP/upstream-update.json"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'The imported sources already match the mobile app.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Open a draft PR and start validation
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BRANCH: ${{ steps.sync.outputs.branch }}
+        run: |
+          gh auth setup-git
+          git push origin "HEAD:refs/heads/$SYNC_BRANCH"
+          cat > "$RUNNER_TEMP/upstream-pr.md" <<'BODY'
+          ## Summary
+          Import mobile explorer updates and its compatible engine revision while preserving browser changes. Exact upstream revisions are recorded in `upstreams.json`.
+          Merge this PR with a merge commit to preserve subtree import history.
+
+          ## What could break
+          Upstream input, rendering or scene APIs can change browser behavior even when Git merges cleanly.
+
+          ## How to test
+          - Run `node --test tests/upstream.test.mjs` and `./build.sh emsdk engine native wasm preview`.
+          - Load the gameplay and scene-comms fixtures from `tests/` in the editor; verify movement, UI clicks and server replies.
+          - Check the Mobile preview workflow's build, audit and browser regression results before marking ready.
+          BODY
+          gh pr create --base main --head "$SYNC_BRANCH" --draft --title 'Sync preview with the mobile app' --body-file "$RUNNER_TEMP/upstream-pr.md"
+          gh workflow run preview.yml --ref "$SYNC_BRANCH"
+      - name: Keep the update plan
+        if: always() && steps.pending.outputs.count == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-update
+          path: ${{ runner.temp }}/upstream-update.json
+          if-no-files-found: ignore
+          retention-days: 7
