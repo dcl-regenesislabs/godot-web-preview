@@ -31,3 +31,28 @@ rustflags = [
 
 [env]
 CARGO_FEATURE_CRT_STATIC = "ohyes"
+# Web (spike): nightly + `-Zbuild-std=std,panic_abort`; the Godot web template has no C++ exception support.
+[target.wasm32-unknown-emscripten]
+rustflags = [
+    "-C", "link-args=-sSIDE_MODULE=2",
+    "-C", "panic=abort",
+    "-C", "llvm-args=-enable-emscripten-cxx-exceptions=0",
+    "-C", "target-feature=+bulk-memory,+mutable-globals",
+    # SIDE_MODULE=2 exports nothing implicitly; the dylink loader finds EM_JS bodies via these exports.
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_fetch_start",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_fetch_take",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_ws_open",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_ws_take",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_ws_send",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_ws_close",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_scene_spawn",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_scene_take",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_scene_post",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_scene_kill",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_scene_comms_send",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_pulse_open",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_pulse_take",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_pulse_send",
+    "-C", "link-arg=-Wl,--export=__em_js__dcl_pulse_close",
+
+]

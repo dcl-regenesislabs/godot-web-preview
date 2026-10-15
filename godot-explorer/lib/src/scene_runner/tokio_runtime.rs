@@ -14,9 +14,15 @@ pub struct TokioRuntime {
 #[godot_api]
 impl INode for TokioRuntime {
     fn init(_base: Base<Node>) -> Self {
+        #[cfg(not(target_family = "wasm"))]
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("dcl-godot-tokio")
+            .build();
+        // No threads on the web: tasks run on the main thread, driven from `process`.
+        #[cfg(target_family = "wasm")]
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build();
         match rt {
             Ok(rt) => Self {
@@ -26,6 +32,19 @@ impl INode for TokioRuntime {
                 tracing::error!("{e}");
                 Self { runtime: None }
             }
+        }
+    }
+
+    /// Runs the tasks that became ready since the last frame (fetch/WebSocket callbacks,
+    /// timers, channel wakeups). Yielding a few times lets freshly woken tasks chain.
+    #[cfg(target_family = "wasm")]
+    fn process(&mut self, _delta: f64) {
+        if let Some(rt) = self.runtime.as_ref() {
+            rt.block_on(async {
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+            });
         }
     }
 }
@@ -66,6 +85,9 @@ impl TokioRuntime {
         if let Some(handle) = Self::static_clone_handle() {
             handle.spawn(future);
         } else {
+            #[cfg(target_family = "wasm")]
+            tracing::error!("TokioRuntime::spawn before the runtime exists; task dropped");
+            #[cfg(not(target_family = "wasm"))]
             std::thread::spawn(move || {
                 let runtime = tokio::runtime::Runtime::new();
                 if runtime.is_err() {

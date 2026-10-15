@@ -1,5 +1,5 @@
 // engine module
-const { op_crdt_recv_wait, op_crdt_recv_drain, op_crdt_send_to_renderer, op_subscribe, op_send_batch } = Deno.core.ops;
+const { op_crdt_recv_wait, op_crdt_recv_drain, op_crdt_send_to_renderer, op_subscribe, op_unsubscribe, op_send_batch } = Deno.core.ops;
 
 // Persistent recv buffer reused across every CRDT round-trip. 64 KB initial
 // covers typical steady-state recvs (~1-25 KB); the buffer auto-grows on

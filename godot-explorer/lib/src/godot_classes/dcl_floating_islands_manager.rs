@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
+#[cfg(not(target_family = "wasm"))]
 use std::thread;
+
+use fastnoise_lite::FastNoiseLite;
 
 use godot::builtin::{
     Array, Color, PackedByteArray, PackedColorArray, PackedFloat32Array, PackedInt32Array,
@@ -946,6 +949,40 @@ fn prop_physics_in_range(coord: (i32, i32), player: Vector2i) -> bool {
     dist <= PHYSICS_RANGE
 }
 
+fn build_parcel(
+    payload: WorkerPayload,
+    terrain_noise: &FastNoiseLite,
+    cliff_noise: &FastNoiseLite,
+) -> BuiltParcelMeshes {
+    let terrain =
+        terrain::build_terrain_mesh(payload.coord, &payload.config, terrain_noise, cliff_noise);
+    let mut sides = Vec::new();
+    for side in cliffs::nothing_sides(&payload.config) {
+        let cliff = cliffs::build_cliff_mesh(
+            &side,
+            payload.coord,
+            &payload.config,
+            terrain_noise,
+            cliff_noise,
+        );
+        let overhang = cliffs::build_overhang_mesh(
+            &side,
+            payload.coord,
+            &payload.config,
+            terrain_noise,
+            cliff_noise,
+        );
+        sides.push(BuiltCliffSide { cliff, overhang });
+    }
+    BuiltParcelMeshes {
+        coord: payload.coord,
+        config: payload.config,
+        terrain,
+        sides,
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn spawn_worker() -> WorkerHandle {
     let (tx_req, rx_req) = mpsc::channel::<WorkerMsg>();
     let (tx_res, rx_res) = mpsc::channel::<BuiltParcelMeshes>();
@@ -958,37 +995,8 @@ fn spawn_worker() -> WorkerHandle {
                 let Ok(WorkerMsg::Build(payload)) = rx_req.recv() else {
                     break;
                 };
-                let terrain = terrain::build_terrain_mesh(
-                    payload.coord,
-                    &payload.config,
-                    &terrain_noise,
-                    &cliff_noise,
-                );
-                let mut sides = Vec::new();
-                for side in cliffs::nothing_sides(&payload.config) {
-                    let cliff = cliffs::build_cliff_mesh(
-                        &side,
-                        payload.coord,
-                        &payload.config,
-                        &terrain_noise,
-                        &cliff_noise,
-                    );
-                    let overhang = cliffs::build_overhang_mesh(
-                        &side,
-                        payload.coord,
-                        &payload.config,
-                        &terrain_noise,
-                        &cliff_noise,
-                    );
-                    sides.push(BuiltCliffSide { cliff, overhang });
-                }
                 if tx_res
-                    .send(BuiltParcelMeshes {
-                        coord: payload.coord,
-                        config: payload.config,
-                        terrain,
-                        sides,
-                    })
+                    .send(build_parcel(payload, &terrain_noise, &cliff_noise))
                     .is_err()
                 {
                     break;
@@ -996,6 +1004,39 @@ fn spawn_worker() -> WorkerHandle {
             }
         })
         .expect("failed to spawn floating-islands mesh worker");
+    WorkerHandle {
+        tx: tx_req,
+        rx: rx_res,
+    }
+}
+
+/// No threads on the web: the same worker loop runs as a task on the main-thread runtime,
+/// building one parcel per tick so a burst of requests doesn't stall a frame.
+#[cfg(target_family = "wasm")]
+fn spawn_worker() -> WorkerHandle {
+    let (tx_req, rx_req) = mpsc::channel::<WorkerMsg>();
+    let (tx_res, rx_res) = mpsc::channel::<BuiltParcelMeshes>();
+    crate::scene_runner::tokio_runtime::TokioRuntime::spawn(async move {
+        let terrain_noise = terrain::build_terrain_noise();
+        let cliff_noise = terrain::build_cliff_noise();
+        loop {
+            match rx_req.try_recv() {
+                Ok(WorkerMsg::Build(payload)) => {
+                    if tx_res
+                        .send(build_parcel(payload, &terrain_noise, &cliff_noise))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+    });
     WorkerHandle {
         tx: tx_req,
         rx: rx_res,

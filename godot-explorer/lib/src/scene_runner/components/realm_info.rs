@@ -33,14 +33,19 @@ pub fn sync_realm_info(scene: &Scene, crdt_state: &mut SceneCrdtState) {
     let comms = comms.bind();
     let comms_adapter = comms.get_current_adapter_conn_str().to_string();
 
-    // Check if the scene room matches this scene
-    let scene_room_id = comms.get_current_scene_room_id().to_string();
-    let current_scene_id = scene.scene_entity_definition.id.clone();
-    let is_scene_room_for_this_scene =
-        !scene_room_id.is_empty() && scene_room_id == current_scene_id;
-
-    let is_connected_scene_room =
-        is_scene_room_for_this_scene && comms.is_connected_to_scene_room();
+    #[cfg(not(target_family = "wasm"))]
+    let (scene_room_id, is_connected_scene_room) = {
+        let room = comms.get_current_scene_room_id().to_string();
+        let connected = room == scene.scene_entity_definition.id
+            && !room.is_empty()
+            && comms.is_connected_to_scene_room();
+        (room, connected)
+    };
+    #[cfg(target_family = "wasm")]
+    let (scene_room_id, is_connected_scene_room) = (
+        scene.scene_entity_definition.id.clone(),
+        crate::web::scene_host::comms_connected(scene.scene_id),
+    );
 
     let room = if is_connected_scene_room {
         Some(scene_room_id)

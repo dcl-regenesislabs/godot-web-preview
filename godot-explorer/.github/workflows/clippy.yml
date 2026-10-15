@@ -10,7 +10,7 @@ jobs:
   clippy:
     name: Cargo check, clippy and version check
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     env:
       GODOT4_BIN: ${{ github.workspace }}/.bin/godot/godot4_bin
       PROTOC: ${{ github.workspace }}/.bin/protoc/bin/protoc

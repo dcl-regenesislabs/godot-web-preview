@@ -4,6 +4,8 @@ pub mod crdt;
 #[cfg(feature = "use_deno")]
 pub mod js;
 pub mod scene_apis;
+pub mod scene_events;
+pub mod scene_ops;
 pub mod serialization;
 pub mod ui_text_tags;
 
@@ -112,7 +114,31 @@ pub struct DclScene {
     pub scene_id: SceneId,
     pub scene_crdt: SharedSceneCrdtState,
     pub main_sender_to_thread: tokio::sync::mpsc::Sender<RendererResponse>,
-    pub thread_join_handle: JoinHandle<()>,
+    pub thread_join_handle: SceneThreadHandle,
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub type SceneThreadHandle = JoinHandle<()>;
+
+/// Web has no scene threads yet (the JS runtime will live in a Web Worker); the scene stays
+/// alive and silent, and renderer messages are drained so `blocking_send` never stalls.
+#[cfg(target_family = "wasm")]
+pub struct SceneThreadHandle;
+
+#[cfg(target_family = "wasm")]
+impl SceneThreadHandle {
+    fn spawn_drain(mut receiver: tokio::sync::mpsc::Receiver<RendererResponse>) -> Self {
+        crate::scene_runner::tokio_runtime::TokioRuntime::spawn(async move {
+            while receiver.recv().await.is_some() {}
+        });
+        SceneThreadHandle
+    }
+    pub fn is_finished(&self) -> bool {
+        false
+    }
+    pub fn join(self) -> std::thread::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -167,6 +193,16 @@ impl DclScene {
         #[cfg(feature = "use_deno")]
         let thread_scene_crdt = scene_crdt.clone();
 
+        #[cfg(target_family = "wasm")]
+        let thread_join_handle = {
+            crate::web::scene_host::spawn(
+                spawn_dcl_scene_data,
+                scene_crdt.clone(),
+                thread_receive_from_renderer,
+            );
+            SceneThreadHandle
+        };
+        #[cfg(not(target_family = "wasm"))]
         let thread_join_handle = std::thread::Builder::new()
             .name(format!("scene thread {}", spawn_dcl_scene_data.scene_id.0))
             .spawn(move || {
@@ -193,6 +229,9 @@ impl DclScene {
 
         let scene_crdt = Arc::new(Mutex::new(SceneCrdtState::from_proto()));
 
+        #[cfg(target_family = "wasm")]
+        let thread_join_handle = SceneThreadHandle::spawn_drain(_thread_receive_from_renderer);
+        #[cfg(not(target_family = "wasm"))]
         let thread_join_handle = std::thread::Builder::new()
             .name(format!("scene thread {}", id.0))
             .spawn(move || {})

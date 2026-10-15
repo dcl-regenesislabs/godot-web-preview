@@ -1,0 +1,19 @@
+[workspace]
+members = [
+  "rpc",
+  "examples/integration",
+  "examples/integration-multi-lang"
+]
+
+[workspace.dependencies]
+async-channel = "1.8.0"
+async-trait = "0.1.57"
+bytes = "1.3.0"
+futures-channel = "0.3"
+futures-util = {version = "0.3", default-features = false, features = ["sink", "std"]}
+log = "0.4.17"
+prost = "0.11.5"
+tokio = {version = "1.0.0", default-features = false, features = ["io-util", "macros", "rt", "time", "sync"]}
+tokio-tungstenite = { version = "0.24" }
+tokio-util = "0.7.4"
+rcgen = "0.10.0"

@@ -108,7 +108,7 @@ var sentry_error_events_enabled := false
 func _initialize() -> void:
 	# Skip Sentry init when telemetry is disabled at build time
 	# (e.g. CI desktop builds compiled with the `disable_telemetry` cargo feature).
-	if DclGlobal.is_telemetry_disabled():
+	if DclGlobal.is_telemetry_disabled() or LocalPreviewRuntime.is_enabled():
 		return
 
 	# Clean semver (`{version}+{build}`) so Sentry parses release.version / release.build.

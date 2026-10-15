@@ -51,6 +51,9 @@ static var _uuid_regex: RegEx = null
 
 
 func _ready():
+	if LocalPreviewRuntime.is_enabled():
+		process_mode = Node.PROCESS_MODE_DISABLED
+		return
 	# Back on the standalone Discover screen — release the soft sign-out guard so a
 	# later Dev Tools "RETURN TO DISCOVER" press works (no-op when set from in-game).
 	Global._returning_to_discover = false

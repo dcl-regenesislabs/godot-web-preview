@@ -115,14 +115,14 @@ func _ready():
 	_preview_ws.scene_update.connect(_on_preview_scene_update)
 	_preview_ws.model_update.connect(async_on_preview_model_update)
 
-	# Initialize wall manager and base floor manager only for floating islands mode
-	if is_using_floating_islands():
-		wall_manager = FloatingIslandWalls.new()
-		add_child(wall_manager)
-
+	if is_using_floating_islands() or LocalPreviewRuntime.is_enabled():
 		base_floor_manager = BaseFloorManager.new()
 		base_floor_manager.name = "BaseFloorManager"
 		add_child(base_floor_manager)
+
+	if is_using_floating_islands():
+		wall_manager = FloatingIslandWalls.new()
+		add_child(wall_manager)
 
 		islands_manager = DclFloatingIslandsManager.new()
 		islands_manager.name = "FloatingIslandsManager"
@@ -348,7 +348,7 @@ func _async_on_desired_scene_changed():
 	var new_loading = (
 		loaded_scenes.is_empty()
 		and not loadable_scenes.is_empty()
-		and is_using_floating_islands()
+		and (is_using_floating_islands() or LocalPreviewRuntime.is_enabled())
 		and (not _use_dynamic_loading or is_reloading_now)
 		and not is_hot_reloading_now
 	)
@@ -591,7 +591,11 @@ func get_scene_by_req_id(request_id: int):
 
 
 func is_using_floating_islands() -> bool:
-	return not (Global.cli.scene_test_mode or Global.cli.scene_renderer_mode)
+	return not (
+		Global.cli.scene_test_mode
+		or Global.cli.scene_renderer_mode
+		or LocalPreviewRuntime.is_enabled()
+	)
 
 
 func _unload_scenes_except_current(current_scene_id: int) -> void:
@@ -965,7 +969,10 @@ func async_load_scene(
 	# the optimized bucket too; a 404 there just means "not optimized" and the
 	# file comes from the content server instead. Everything starts together.
 	var skip_optimized = (
-		Global.is_xr() or Global.get_testing_scene_mode() or Global.cli.only_no_optimized
+		Global.is_xr()
+		or Global.get_testing_scene_mode()
+		or Global.cli.only_no_optimized
+		or LocalPreviewRuntime.is_enabled()
 	)
 	var opt_base: String = Global.content_provider.get_optimized_base_url()
 

@@ -3,6 +3,9 @@ extends Node3D
 
 const FLOOR_SIZE = 16.0
 const BASE_FLOOR_MATERIAL = preload("res://assets/empty-scenes/base_floor_material.tres")
+const PREVIEW_FLOOR_MATERIAL = preload(
+	"res://assets/empty-scenes/local_preview_floor_material.tres"
+)
 
 var base_floor_multimesh: MultiMeshInstance3D = null
 var loaded_parcels_floors: Dictionary = {}
@@ -42,7 +45,9 @@ func _initialize_base_floor_multimesh():
 	arrays[Mesh.ARRAY_INDEX] = indices
 
 	array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	array_mesh.surface_set_material(0, BASE_FLOOR_MATERIAL)
+	array_mesh.surface_set_material(
+		0, PREVIEW_FLOOR_MATERIAL if LocalPreviewRuntime.is_enabled() else BASE_FLOOR_MATERIAL
+	)
 	var multimesh = MultiMesh.new()
 	multimesh.mesh = array_mesh
 	multimesh.transform_format = MultiMesh.TRANSFORM_3D

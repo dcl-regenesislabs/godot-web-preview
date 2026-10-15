@@ -2466,7 +2466,7 @@ impl CommunicationManager {
         // endpoint is fixed/CLI-provided). Recreating it here gives realm changes a fresh
         // handshake + TeleportRequest with the new realm name for free.
         #[cfg(feature = "use_pulse")]
-        if protocol != "offline" {
+        if protocol != "offline" || (cfg!(target_family = "wasm") && self.local_scene_development) {
             self.ensure_pulse_room();
         }
 

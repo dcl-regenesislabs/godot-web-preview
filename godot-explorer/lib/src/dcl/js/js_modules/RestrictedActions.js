@@ -1,5 +1,5 @@
 module.exports.movePlayerTo = async function (body) {
-  Deno.core.ops.op_move_player_to(
+  await Deno.core.ops.op_move_player_to(
     body.newRelativePosition.x,
     body.newRelativePosition.y,
     body.newRelativePosition.z,

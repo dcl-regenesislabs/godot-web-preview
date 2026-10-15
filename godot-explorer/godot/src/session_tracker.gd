@@ -58,6 +58,9 @@ var _pending_settle_left := 0.0
 
 
 func _ready() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		set_process(false)
+		return
 	set_process(false)
 	# Same telemetry gate Global applies to Metrics: with nobody to emit to, the disk writes
 	# would buy nothing. Global itself is checked because the script validator instantiates

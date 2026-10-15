@@ -1,0 +1,9 @@
+[package]
+name = "dcl-web-websocket"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Browser WebSocket for wasm32-unknown-emscripten (no threads), as async Rust."
+
+[build-dependencies]
+cc = "1"

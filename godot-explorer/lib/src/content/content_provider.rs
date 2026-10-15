@@ -2801,7 +2801,7 @@ impl ContentProvider {
             // by the scene saver in an earlier session isn't in the map, so the
             // file itself would survive and be re-adopted later.
             resource_provider.delete_file(&scene_path).await;
-            let _ = tokio::fs::remove_file(&scene_path).await;
+            let _ = crate::web::fs::remove_file(&scene_path).await;
             then_promise(get_promise, Ok(None));
         });
 

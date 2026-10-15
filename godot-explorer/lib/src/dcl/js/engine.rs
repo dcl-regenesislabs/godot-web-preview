@@ -140,8 +140,8 @@ pub fn drain_crdt_component_breakdown() -> CrdtComponentBreakdown {
 use super::{
     comms::{InternalPendingBinaryMessages, COMMS_MSG_TYPE_BINARY},
     events::process_events,
-    players::{get_player_data, get_players},
 };
+use crate::dcl::scene_ops::{get_player_data, get_players};
 
 // list of op declarations
 pub fn ops() -> Vec<OpDecl> {

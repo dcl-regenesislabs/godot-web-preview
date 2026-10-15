@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_family = "wasm"))]
 use tokio::net::UdpSocket;
 use tokio::runtime::Handle;
 use tokio::time::timeout;
@@ -106,6 +107,13 @@ pub async fn sync_now() -> Result<i64, String> {
     Err(last_error)
 }
 
+// Browsers have no UDP; the offset stays 0 and signing uses the device clock.
+#[cfg(target_family = "wasm")]
+async fn query(_server: &str) -> Result<i64, String> {
+    Err("SNTP is not available in browsers".to_owned())
+}
+
+#[cfg(not(target_family = "wasm"))]
 async fn query(server: &str) -> Result<i64, String> {
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await

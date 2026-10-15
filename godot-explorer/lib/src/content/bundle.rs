@@ -56,7 +56,7 @@ pub async fn extract_bundle(
     // List entries on a blocking thread (the crate is synchronous).
     let names: Vec<String> = {
         let zip_path = zip_path.clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        crate::web::spawn_blocking(move || -> Result<Vec<String>, String> {
             let file =
                 std::fs::File::open(&zip_path).map_err(|e| format!("open {}: {}", zip_path, e))?;
             let mut archive =
@@ -119,7 +119,7 @@ async fn extract_one(zip_path: &str, name: &str, dest: &str) -> Result<u64, Stri
     let zip_path = zip_path.to_string();
     let name = name.to_string();
     let dest = dest.to_string();
-    tokio::task::spawn_blocking(move || -> Result<u64, String> {
+    crate::web::spawn_blocking(move || -> Result<u64, String> {
         let file =
             std::fs::File::open(&zip_path).map_err(|e| format!("open {}: {}", zip_path, e))?;
         let mut archive =
@@ -148,7 +148,7 @@ async fn delete_zip(provider: &Arc<ResourceProvider>, zip_name: &str, zip_path: 
     if provider.delete_file_by_hash(zip_name).await.is_none() {
         // Not tracked (adopted before `initialize`, or never registered) —
         // remove it from disk anyway.
-        let _ = tokio::fs::remove_file(zip_path).await;
+        let _ = crate::web::fs::remove_file(zip_path).await;
     }
 }
 
@@ -261,7 +261,7 @@ mod tests {
         let path = cache_file_path(&ctx.content_folder, "a.opt.scn");
         assert!(ctx.resource_provider.file_exists_by_path(&path).await);
         let provider = ctx.resource_provider.clone();
-        let total = tokio::task::spawn_blocking(move || provider.get_cache_total_size())
+        let total = crate::web::spawn_blocking(move || provider.get_cache_total_size())
             .await
             .unwrap();
         // 6 (extracted) + 3 (`cached.opt.res`, adopted by `initialize`); the zip

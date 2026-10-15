@@ -1,15 +1,8 @@
-//! Transport boundary for Pulse — the byte seam between the protocol layer and the ENet driver.
-//! Ported from bevy-explorer `crates/comms/src/pulse/transport.rs` @ 3f65c164 (WebTransport
-//! support and the cross-realm warm-socket `presence` gate dropped: this client tears the room
-//! down on realm change, like every other comms room).
-//!
-//! The driver knows nothing about protobuf, identity, the decoder, or the parcel grid. Its whole
-//! contract is: connect to `host:port`, then move bytes between two channels — outbound
-//! [`PulseFrame`]s (with a reliability tag the driver maps to ENet channels) and inbound raw
-//! `ServerMessage` bytes — and report [`PulseStatus`]. Because the seam is bytes, everything
-//! above it (handshake, decode, state machine) is testable with in-memory channels, no sockets.
+//! Pulse byte boundary shared by native ENet and browser WebTransport.
 
+#[cfg(not(target_family = "wasm"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -174,37 +167,54 @@ pub fn pulse_channels(capacity: usize) -> (PulseLink, PulseDriverChannels) {
     )
 }
 
-/// Owns the running driver. Dropping (or `stop()`) tears it down and joins the thread.
+/// Owns the transport; dropping closes it and joins the native thread when present.
 pub struct PulseDriverHandle {
+    #[cfg(target_family = "wasm")]
+    browser: i32,
+    #[cfg(not(target_family = "wasm"))]
     stop: Arc<AtomicBool>,
+    #[cfg(not(target_family = "wasm"))]
     join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PulseDriverHandle {
     #[allow(dead_code)]
     pub fn stop(&self) {
+        #[cfg(not(target_family = "wasm"))]
         self.stop.store(true, Ordering::Relaxed);
+        #[cfg(target_family = "wasm")]
+        dcl_web_pulse::close(self.browser);
     }
 }
 
 impl Drop for PulseDriverHandle {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop();
+        #[cfg(not(target_family = "wasm"))]
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
     }
 }
 
-/// Spawn the ENet driver on its dedicated thread (ENet is a synchronous single-thread poll loop).
+/// Start the platform transport.
 pub fn spawn_pulse_driver(
     config: PulseTransportConfig,
     channels: PulseDriverChannels,
 ) -> PulseDriverHandle {
-    let stop = Arc::new(AtomicBool::new(false));
-    let join = super::native::spawn(config, channels, stop.clone());
-    PulseDriverHandle {
-        stop,
-        join: Some(join),
+    #[cfg(target_family = "wasm")]
+    {
+        PulseDriverHandle {
+            browser: super::wasm::spawn(config, channels),
+        }
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let stop = Arc::new(AtomicBool::new(false));
+        let join = super::native::spawn(config, channels, stop.clone());
+        PulseDriverHandle {
+            stop,
+            join: Some(join),
+        }
     }
 }

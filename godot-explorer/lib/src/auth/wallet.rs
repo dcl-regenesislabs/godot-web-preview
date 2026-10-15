@@ -57,12 +57,25 @@ pub trait ObjSafeWalletSigner {
 
 #[async_trait]
 impl ObjSafeWalletSigner for LocalWallet {
+    #[cfg(not(target_family = "wasm"))]
     async fn sign_message(&self, message: &[u8]) -> Result<Signature, WalletError> {
         Signer::sign_message(self, message).await
     }
 
+    #[cfg(not(target_family = "wasm"))]
     async fn sign_transaction(&self, message: &TypedTransaction) -> Result<Signature, WalletError> {
         Signer::sign_transaction(self, message).await
+    }
+
+    // ethers' Signer futures are !Send on wasm32; a local key signs synchronously anyway.
+    #[cfg(target_family = "wasm")]
+    async fn sign_message(&self, message: &[u8]) -> Result<Signature, WalletError> {
+        self.sign_hash(ethers_core::utils::hash_message(message))
+    }
+
+    #[cfg(target_family = "wasm")]
+    async fn sign_transaction(&self, message: &TypedTransaction) -> Result<Signature, WalletError> {
+        self.sign_transaction_sync(message)
     }
 
     fn address(&self) -> Address {

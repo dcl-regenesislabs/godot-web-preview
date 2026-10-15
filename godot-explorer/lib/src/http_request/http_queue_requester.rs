@@ -250,7 +250,7 @@ impl HttpQueueRequester {
             }
             ResponseType::ToFile(file_path) => {
                 let content = response.bytes().await.map_err(map_err_func)?.to_vec();
-                let mut file = tokio::fs::File::create(file_path.clone())
+                let mut file = crate::web::fs::File::create(file_path.clone())
                     .await
                     .map_err(|e| RequestResponseError {
                         id: request_option.id,

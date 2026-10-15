@@ -208,7 +208,7 @@ func set_button_pressed(button_to_press: BUTTON) -> void:
 
 
 func capture_mouse():
-	if DisplayServer.has_feature(DisplayServer.FEATURE_MOUSE):
+	if not Global.is_mobile() and DisplayServer.has_feature(DisplayServer.FEATURE_MOUSE):
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 

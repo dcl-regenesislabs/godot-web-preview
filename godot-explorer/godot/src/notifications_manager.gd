@@ -92,6 +92,9 @@ var _android_plugin = null:
 
 
 func _ready() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		set_process(false)
+		return
 	# Enable debug logging in debug builds
 	# _debug_notifications_enabled = OS.is_debug_build()
 
@@ -134,6 +137,8 @@ func _ready() -> void:
 
 ## Start polling for new notifications
 func start_polling() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		return
 	# Don't poll for guests
 	if not NotificationUtils.is_user_authenticated():
 		return

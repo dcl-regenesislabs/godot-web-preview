@@ -23,6 +23,9 @@ var _bottom_spacer: Control = null
 
 
 func _ready() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		process_mode = Node.PROCESS_MODE_DISABLED
+		return
 	# Ensure the panel blocks touch/mouse events from passing through when visible
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	set_process_input(true)

@@ -362,8 +362,7 @@ func _ready():
 	# Apply current state once at startup (in case something toggled early).
 	_apply_hide_ui_to_avatar_nicks(_session_hide_player_names)
 
-	# Initialize social service for non-guest accounts
-	if not Global.player_identity.is_guest:
+	if not LocalPreviewRuntime.is_enabled() and not Global.player_identity.is_guest:
 		_async_initialize_social_service()
 
 	var profile := Global.player_identity.get_profile_or_null()
@@ -398,6 +397,8 @@ func _ready():
 	add_child(dcl_global_camera_controller)
 
 	button_show_ui.pressed.connect(_on_button_show_ui_pressed)
+	if LocalPreviewRuntime.is_enabled():
+		LocalPreviewRuntime.hide_controls([navbar, profile_container, control_menu])
 	_session_hide_main_hud = false
 	set_visible_ui(true, true)
 
@@ -536,6 +537,8 @@ func _safe_disconnect(sig: Signal, callable: Callable) -> void:
 
 
 func _on_player_profile_changed(_profile: DclUserProfile) -> void:
+	if LocalPreviewRuntime.is_enabled():
+		return
 	# Start notifications polling when authenticated
 	print("[Explorer] Player profile changed - starting notifications polling")
 	NotificationsManager.start_polling()
@@ -897,7 +900,7 @@ func avatar_look_at_independent(look_at_position: Vector3):
 
 
 func capture_mouse():
-	if DisplayServer.has_feature(DisplayServer.FEATURE_MOUSE):
+	if not Global.is_mobile() and DisplayServer.has_feature(DisplayServer.FEATURE_MOUSE):
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	if label_crosshair and ui_root:
 		if not Global.touch_controls_hide_crosshair:  # respect scene-driven crosshair hide
@@ -1456,6 +1459,10 @@ func _on_loading_started() -> void:
 func _on_loading_finished() -> void:
 	_is_loading = false
 	_update_version_label()
+	if LocalPreviewRuntime.is_enabled():
+		virtual_joystick.cancel()
+		JavaScriptBridge.eval("window.localPreviewReady?.()")
+		return
 	# Drain any toast queued while loading (or orphaned during the lobby before this consumer existed).
 	NotificationsManager.kick_queue()
 	if not Global.modal_manager.ban_pre_check_active:

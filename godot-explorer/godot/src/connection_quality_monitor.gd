@@ -74,6 +74,9 @@ var _snooze_last_update: float = 0.0
 
 
 func _ready() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		set_process(false)
+		return
 	_snooze_last_update = _now()
 
 	_poll_timer = Timer.new()

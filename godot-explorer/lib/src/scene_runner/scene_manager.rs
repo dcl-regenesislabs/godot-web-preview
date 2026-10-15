@@ -190,7 +190,8 @@ pub struct SceneManager {
 
 // This value is the current global tick number, is used for marking the cronolgy of lamport timestamp
 pub static GLOBAL_TICK_NUMBER: AtomicU32 = AtomicU32::new(0);
-pub static GLOBAL_TIMESTAMP: AtomicU32 = AtomicU32::new(0);
+// SDK input ignores timestamps at or below its initial watermark of zero.
+pub static GLOBAL_TIMESTAMP: AtomicU32 = AtomicU32::new(1);
 
 const MAX_TIME_PER_SCENE_TICK_US: i64 = 8333; // 50% of update time at 60fps
 const MIN_TIME_TO_PROCESS_SCENE_US: i64 = 2083; // 25% of max_time_per_scene_tick_us (4 scenes per frame)
@@ -598,6 +599,7 @@ impl SceneManager {
     /// entries). Call right before sampling.
     #[func]
     pub fn reset_crdt_metrics(&mut self) {
+        #[cfg(feature = "use_deno")]
         crate::dcl::js::engine::reset_crdt_metrics();
     }
 
@@ -605,12 +607,17 @@ impl SceneManager {
     /// after sampling; embed in benchmark JSON.
     #[func]
     pub fn drain_crdt_metrics(&mut self) -> GString {
-        let m = crate::dcl::js::engine::drain_crdt_metrics();
-        let s = format!(
-            "send_bytes={}\nsend_ops={}\nrecv_bytes={}\nrecv_ops={}\ndirty_lww_entries={}\ndirty_gos_entries={}\n",
-            m.send_bytes, m.send_ops, m.recv_bytes, m.recv_ops, m.dirty_lww_entries, m.dirty_gos_entries,
-        );
-        GString::from(s.as_str())
+        #[cfg(not(feature = "use_deno"))]
+        return GString::new();
+        #[cfg(feature = "use_deno")]
+        {
+            let m = crate::dcl::js::engine::drain_crdt_metrics();
+            let s = format!(
+                "send_bytes={}\nsend_ops={}\nrecv_bytes={}\nrecv_ops={}\ndirty_lww_entries={}\ndirty_gos_entries={}\n",
+                m.send_bytes, m.send_ops, m.recv_bytes, m.recv_ops, m.dirty_lww_entries, m.dirty_gos_entries,
+            );
+            GString::from(s.as_str())
+        }
     }
 
     /// Drain per-component-id breakdown of dirty entries from the Rust→V8 path.
@@ -619,17 +626,22 @@ impl SceneManager {
     /// in JSON to identify which SDK7 components dominate the round-trip.
     #[func]
     pub fn drain_crdt_component_breakdown(&mut self) -> GString {
-        let breakdown = crate::dcl::js::engine::drain_crdt_component_breakdown();
-        let mut out = String::new();
-        for (id, count) in breakdown.lww {
-            let name = crate::dcl::components::component_id_to_name(id);
-            out.push_str(&format!("lww:{}({})={}\n", name, id, count));
+        #[cfg(not(feature = "use_deno"))]
+        return GString::new();
+        #[cfg(feature = "use_deno")]
+        {
+            let breakdown = crate::dcl::js::engine::drain_crdt_component_breakdown();
+            let mut out = String::new();
+            for (id, count) in breakdown.lww {
+                let name = crate::dcl::components::component_id_to_name(id);
+                out.push_str(&format!("lww:{}({})={}\n", name, id, count));
+            }
+            for (id, count) in breakdown.gos {
+                let name = crate::dcl::components::component_id_to_name(id);
+                out.push_str(&format!("gos:{}({})={}\n", name, id, count));
+            }
+            GString::from(out.as_str())
         }
-        for (id, count) in breakdown.gos {
-            let name = crate::dcl::components::component_id_to_name(id);
-            out.push_str(&format!("gos:{}({})={}\n", name, id, count));
-        }
-        GString::from(out.as_str())
     }
 
     /// Report that a scene was spawned and is now loading assets

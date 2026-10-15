@@ -438,6 +438,9 @@ func send_haptic_feedback(duration_ms: int = 20, amplitude: float = -1.0) -> voi
 # gdlint: ignore=async-function-name
 func _ready():
 	print("[Startup] global._ready start: %dms" % (Time.get_ticks_msec() - _startup_time))
+	# Web has no tokio threads: the runtime advances from its own _process.
+	if OS.has_feature("web"):
+		add_child(tokio_runtime)
 	BugReportCapture.listen_for_settings(self)
 	# Bench-only: uncap FPS / disable vsync before any code path can re-pin
 	# Engine.max_fps. Real users keep their saved cap + vsync; mobile bench
@@ -656,7 +659,11 @@ func _ready():
 	# Skip Segment metrics + Sentry tagging in asset-server mode, or when
 	# telemetry is disabled at build time (CI desktop builds use the
 	# `disable_telemetry` cargo feature).
-	var telemetry_enabled := not cli.asset_server and not DclGlobal.is_telemetry_disabled()
+	var telemetry_enabled := (
+		not cli.asset_server
+		and not LocalPreviewRuntime.is_enabled()
+		and not DclGlobal.is_telemetry_disabled()
+	)
 
 	# Initialize metrics with proper user_id and session_id
 	if telemetry_enabled:
@@ -696,8 +703,9 @@ func _ready():
 	get_tree().root.add_child.call_deferred(self.skybox_time)
 	get_tree().root.add_child.call_deferred(self.locations)
 	get_tree().root.add_child.call_deferred(self.modal_manager)
-	get_tree().root.add_child.call_deferred(self.upgrade_nudge_coordinator)
-	get_tree().root.add_child.call_deferred(self.review_prompt_coordinator)
+	if not LocalPreviewRuntime.is_enabled():
+		get_tree().root.add_child.call_deferred(self.upgrade_nudge_coordinator)
+		get_tree().root.add_child.call_deferred(self.review_prompt_coordinator)
 	get_tree().root.add_child.call_deferred(self.content_provider)
 	get_tree().root.add_child.call_deferred(self.scene_runner)
 	get_tree().root.add_child.call_deferred(self.realm)
@@ -732,7 +740,8 @@ func _ready():
 	# Platform attestation: needs to be a Node (uses timers + native plugin signals). The
 	# service self-gates on EULA acceptance and caches the issued session token on disk.
 	self.attestation = AttestationService.new()
-	add_child(self.attestation)
+	if not LocalPreviewRuntime.is_enabled():
+		add_child(self.attestation)
 	# Remote feature flags: the node kicks its own fire-and-forget fetch on _ready
 	# and applies comms-affecting flags (e.g. `archipielago`) when they arrive.
 	self.feature_flags = FeatureFlags.new()
@@ -744,7 +753,8 @@ func _ready():
 	# persists a token coming from install attribution.
 	self.campaigns = Campaigns.new()
 	self.campaigns.set_name("campaigns")
-	add_child(self.campaigns)
+	if not LocalPreviewRuntime.is_enabled():
+		add_child(self.campaigns)
 	get_tree().root.add_child.call_deferred(self.network_inspector)
 	get_tree().root.add_child.call_deferred(self.scene_inspector_dispatcher)
 	get_tree().root.add_child.call_deferred(self.social_blacklist)
@@ -755,7 +765,8 @@ func _ready():
 	# from boot. The bridge also handles `?scene-inspector=` deeplinks.
 	_scene_inspector_bridge = SceneInspectorBridge.new()
 	_scene_inspector_bridge.set_name("scene_inspector_bridge")
-	_scene_inspector_bridge.activate_from_config()
+	if not LocalPreviewRuntime.is_enabled():
+		_scene_inspector_bridge.activate_from_config()
 	get_tree().root.add_child.call_deferred(_scene_inspector_bridge)
 
 	if "memory_debugger" in self:
@@ -786,6 +797,8 @@ func _ready():
 	# bench mode (the function early-returns on cli.bench_mode), so bench results
 	# stay comparable while production keeps thermal-cap + adaptive downgrade.
 	_init_dynamic_graphics_manager.call_deferred()
+	if LocalPreviewRuntime.is_enabled():
+		add_child(LocalPreviewRuntime.new())
 
 	var custom_importer = load("res://src/logic/custom_gltf_importer.gd").new()
 	GLTFDocument.register_gltf_document_extension(custom_importer)
@@ -865,6 +878,8 @@ func _async_clear_cache_if_needed() -> void:
 
 
 func _init_dynamic_graphics_manager() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		return
 	# In bench mode, skip DG init entirely: the bench runner pins force-graphic-profile,
 	# disables thermal cap, and disconnects DG's signal handlers anyway — initializing
 	# DG just adds startup CPU noise and queues thermal_fps_cap signals that race the
@@ -1229,7 +1244,7 @@ func capture_mouse():
 	var explorer = get_node_or_null("/root/explorer")
 	if is_instance_valid(explorer):
 		explorer.capture_mouse()
-	elif DisplayServer.has_feature(DisplayServer.FEATURE_MOUSE):
+	elif not is_mobile() and DisplayServer.has_feature(DisplayServer.FEATURE_MOUSE):
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
@@ -1355,7 +1370,7 @@ func set_orientation_landscape():
 		var presets := _get_safe_area_presets()
 		get_window().size = presets.get_android_window_size(false)
 		get_window().move_to_center()
-	else:
+	elif not OS.has_feature("web"):  # on web the canvas sets the size
 		get_window().size = Vector2i(1280, 720)
 		get_window().move_to_center()
 	orientation_changed.emit(false)
@@ -1378,7 +1393,7 @@ func set_orientation_portrait():
 		var presets := _get_safe_area_presets()
 		get_window().size = presets.get_android_window_size(true)
 		get_window().move_to_center()
-	else:
+	elif not OS.has_feature("web"):  # on web the canvas sets the size
 		get_window().size = Vector2i(720, 1280)
 		get_window().move_to_center()
 	orientation_changed.emit(true)

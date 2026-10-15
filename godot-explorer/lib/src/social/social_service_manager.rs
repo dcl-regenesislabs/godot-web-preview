@@ -1,9 +1,13 @@
 use anyhow::{anyhow, Result};
 use dcl_rpc::client::{ClientError, ClientResultError, RpcClient};
-use dcl_rpc::transports::{
-    web_sockets::{tungstenite::WebSocketClient, WebSocketTransport},
-    Transport,
+#[cfg(not(target_family = "wasm"))]
+use dcl_rpc::transports::web_sockets::tungstenite::{
+    TungsteniteWebSocket as RpcSocket, WebSocketClient,
 };
+use dcl_rpc::transports::{web_sockets::WebSocketTransport, Transport};
+
+#[cfg(target_family = "wasm")]
+use crate::web::rpc_socket::{BrowserRpcSocket as RpcSocket, WebSocketClient};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -27,9 +31,7 @@ pub enum ConnectionState {
     Reconnecting,
 }
 
-use dcl_rpc::transports::web_sockets::tungstenite::TungsteniteWebSocket;
-
-type SocialTransport = WebSocketTransport<TungsteniteWebSocket, ()>;
+type SocialTransport = WebSocketTransport<RpcSocket, ()>;
 
 /// Holder for the RPC client and service module that must stay alive
 struct ServiceConnection {

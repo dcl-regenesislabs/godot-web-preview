@@ -1,0 +1,9 @@
+[package]
+name = "dcl-web-scene"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Spawns scene Web Workers and moves CRDT frames between them and wasm (emscripten, no threads)."
+
+[build-dependencies]
+cc = "1"

@@ -6,6 +6,21 @@
 
 Decentraland Godot Explorer is a cross-platform metaverse client built with Godot 4.6.2 and Rust, supporting desktop, mobile, and VR platforms.
 
+The web shell's `--local-editor-preview` mode uses mobile touch input. Mouse clicks
+tap UI controls and dragging the world rotates the camera without pointer lock.
+The ordinary desktop client retains its mouse capture behavior.
+Local preview scenes use a bundled browser LiveKit client for SDK messages and
+authoritative state synchronization with the running scene server. The connection
+uses the preview guest identity, excludes voice/media, and closes on scene unload.
+Browser gameplay calls use the native handlers for player movement, camera/avatar
+targets, emotes, stopping emotes and teleport/realm confirmation dialogs. Event
+subscriptions share the native runtime's event processing; world time and locale
+come from the client. Movement interpolation, portable experiences, file reads,
+wallet operations and external URL/NFT dialogs remain unsupported in the browser.
+The local preview also enables Pulse over WebTransport for player presence,
+movement and emotes. Its signed guest joins the preview scene's `lsd:` realm.
+`--no-pulse` disables it; the web endpoint defaults to port 7743 (native ENet uses 7777).
+
 ## ✨ Features
 
 - **Cross-Platform**: Native support for Linux, Windows, macOS, Android, iOS, and VR
@@ -274,3 +289,56 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
 Powered by the Decentraland DAO
 
 ![Decentraland DAO logo](https://bafkreibci6gg3wbjvxzlqpuh353upzrssalqqoddb6c4rez33bcagqsc2a.ipfs.nftstorage.link/)
+
+## Local web editor preview
+
+The `web` export uses `godot/web/preview.html` and the parent workspace’s sibling
+`godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip`. Build and export
+from the parent workspace with `./build.sh engine wasm preview`. The template requires
+`threads=no webgpu=yes opengl3=no dlink_enabled=yes`. Generated `build/` files stay out of Git.
+Package `build/web/` through the editor’s mobile runtime package; the editor owns serving and
+its scene relay. Its HTML response needs `Document-Isolation-Policy: isolate-and-credentialless`
+for embedded WebGPU.
+
+`--local-editor-preview --fake-deeplink decentraland://open?preview=<realm>&position=0,0`
+starts an ephemeral default avatar directly in the scene, without the lobby, telemetry, account
+panels, notification/connection polling, remote feature flags, or surrounding floating islands.
+Scene content, materials, player input, mobile controls, and scene UI retain their normal paths.
+The preview draws the default grass floor under the scene's parcels, using one shared
+mesh with two triangles per parcel. It adds no surrounding terrain or grass blades.
+Scene JavaScript runs in the web worker;
+its system API bridge remains incomplete (for example, renderer RPC calls).
+Normal mobile runs do not use this mode.
+
+The web export disables the engine’s disk shader cache; browser pipeline caching still applies.
+Local previews keep settings and content in memory for the current run, with a 128 MiB
+content-cache eviction budget instead of the native 2 GB default. They never restore an old
+IndexedDB filesystem into RAM at startup. Reloading a preview refetches its assets through
+the browser HTTP cache. Adaptive graphics is disabled for predictable preview frame pacing.
+The web pack excludes native
+iOS/Android artifacts. Joystick textures import at 512 pixels instead of 1920. Hidden local
+preview tabs pause scene processing and rendering after startup finishes, resuming when brought
+to the foreground. Startup stays active when hidden so loading can finish.
+Minimizing the embedded preview also pauses it; restoring keeps the same engine and player camera.
+The paused instance retains memory until closed, and captures require restoring it first.
+The HTML shell caps the render budget at `?maxpixels=` (the editor sends 1600×720), accepts
+scoped screenshot/visibility/stop messages, and forwards scene builds as hot-reload updates.
+
+Floor regression: open the editor's built-in **Blank** scene and **Preview → As a phone**.
+The avatar should stand on grass at ground level without adding a floor asset. Change the
+parcel layout and rebuild: grass should cover the new parcels without surrounding islands.
+Before the fix, the same scene shows sky beneath the avatar.
+
+Verify in Brave: open **Preview → As a phone**, check textured models and touch controls, build
+a scene edit and confirm it appears, then move the preview to a tab and back. Only one preview
+should run. **Minimize** leaves the editor usable; **Restore preview** resumes without reloading,
+and **Close preview** releases it. Test the message bridge with `node --test godot/web/preview.test.mjs`. The assistant can request `view({target: 'mobile'})`
+in either location. Compare browser/Wasm memory on the same scene and canvas dimensions.
+
+For this browser fork, pull requests run formatting and native Rust check/clippy.
+The inherited Android, native release and container-publishing jobs run only in the
+upstream repository. The `test-godot-web` parent builds the pinned web engine/extension
+and runs browser regressions; it needs read-only access to both private source submodules.
+Its offline browser-dependency check covers the actual Wasm runtime crates. The lockfile
+includes patched anyhow, bytes, keccak, protobuf, rand, Tokio and tracing-subscriber;
+native-only dependencies and development tools require their own advisory review.

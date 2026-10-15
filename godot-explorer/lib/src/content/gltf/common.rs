@@ -994,7 +994,7 @@ pub(super) fn set_owner_recursive(node: &mut Gd<Node>, owner: &Gd<Node>) {
 /// Returns file paths as referenced in the GLTF (relative paths like "textures/image.png").
 pub async fn get_dependencies(file_path: &str) -> Result<Vec<String>, anyhow::Error> {
     let mut dependencies = Vec::new();
-    let mut file = tokio::fs::File::open(file_path).await?;
+    let mut file = crate::web::fs::File::open(file_path).await?;
 
     let magic = file.read_i32_le().await?;
     let json: serde_json::Value = if magic == 0x46546C67 {
@@ -1278,7 +1278,8 @@ where
             .map_err(|err| anyhow::Error::msg(format!("Error casting to Node3D: {err}")))?;
         node.rotate_y(std::f32::consts::PI);
 
-        if ctx.apply_optimizations {
+        // The per-vertex shader fails WebGPU translation and renders magenta.
+        if ctx.apply_optimizations && !cfg!(target_family = "wasm") {
             let (mat_flipped, missing) = apply_post_material_overrides(&node.clone().upcast());
             godot::global::godot_print!(
                 "[materials-post] flipped_to_per_vertex={} surfaces_without_material={}",

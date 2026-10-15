@@ -1,0 +1,9 @@
+{
+  "name": "explorer-web-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "livekit-client": "2.22.3",
+    "playwright": "^1.59.1"
+  }
+}

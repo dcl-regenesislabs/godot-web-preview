@@ -41,6 +41,10 @@ var _loaded := false
 
 
 func _ready() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		Global.comms.set_archipelago_enabled(false)
+		_loaded = true
+		return
 	_async_load.call_deferred()
 
 

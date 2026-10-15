@@ -53,6 +53,14 @@ func start():
 
 func _start():
 	print("[Startup] main._start: %dms" % (Time.get_ticks_msec() - _startup_time))
+	if LocalPreviewRuntime.is_enabled():
+		Global.get_config().session_is_ephemeral = true
+		Global.player_identity.create_disposable_account()
+		Global.player_identity.set_default_profile()
+		get_tree().change_scene_to_file("res://src/ui/explorer.tscn")
+		SplashOverlay.fade_out()
+		return
+
 	if Global.cli.asset_server:
 		print("Running in Asset Server mode")
 		_start_asset_server()

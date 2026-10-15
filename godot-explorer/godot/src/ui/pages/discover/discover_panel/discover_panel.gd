@@ -46,6 +46,9 @@ static var _uuid_regex: RegEx = null
 
 
 func _ready() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		process_mode = Node.PROCESS_MODE_DISABLED
+		return
 	# Block touch/mouse from reaching the 3D camera while the panel is up.
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	set_process_input(true)

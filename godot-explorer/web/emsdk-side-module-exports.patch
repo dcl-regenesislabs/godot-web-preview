@@ -1,0 +1,22 @@
+Emscripten 4.0.11 rejects the mangled std symbols a Rust side module exports
+("invalid export name"). Skip that check for SIDE_MODULE builds and drop those names from the JS exports.
+Apply inside emsdk/upstream/emscripten: patch -p1 < emsdk-side-module-exports.patch
+
+--- a/tools/emscripten.py
++++ b/tools/emscripten.py
+@@ -570,9 +570,12 @@
+   # These are any exports that were not requested on the command line and are
+   # not known auto-generated system functions.
+   unexpected_exports = [e for e in metadata.all_exports if shared.is_user_export(e)]
+-  for n in unexpected_exports:
+-    if not is_valid_js_identifier(n):
+-      exit_with_error(f'invalid export name: {n}')
++  # Rust side modules export std's mangled symbols; skip the check there.
++  if not settings.SIDE_MODULE:
++    for n in unexpected_exports:
++      if not is_valid_js_identifier(n):
++        exit_with_error(f'invalid export name: {n}')
++  unexpected_exports = [n for n in unexpected_exports if is_valid_js_identifier(n)]
+   unexpected_exports = [asmjs_mangle(e) for e in unexpected_exports]
+   unexpected_exports = [e for e in unexpected_exports if e not in expected_exports]
+ 

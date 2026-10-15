@@ -34,10 +34,14 @@ pub const PROFILE_REQUEST_INTERVAL_SECS: f32 = 10.0;
 // Protocol version
 pub const DEFAULT_PROTOCOL_VERSION: u32 = 100;
 
-// Pulse (ENet avatar-state relay) game port. The endpoint host comes from
+// Pulse transport port (WebTransport on web, ENet on native). The endpoint host comes from
 // crate::urls::pulse_server(), overridable via --pulse-server / PULSE_SERVER.
 #[cfg(feature = "use_pulse")]
-pub const PULSE_SERVER_PORT: u16 = 7777;
+pub const PULSE_SERVER_PORT: u16 = if cfg!(target_family = "wasm") {
+    7743
+} else {
+    7777
+};
 
 /// The `IncomingMessage::room_id` for everything bridged from Pulse. A load-bearing room id
 /// (like the `"scene-"`/`"livekit-"` prefixes): MessageProcessor keys the per-peer transport

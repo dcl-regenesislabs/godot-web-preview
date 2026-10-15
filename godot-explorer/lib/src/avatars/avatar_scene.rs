@@ -1404,10 +1404,9 @@ impl AvatarScene {
             .insert(cache_key.to_string(), Self::now_ms());
         let key_for_log = cache_key.to_string();
         TokioRuntime::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                encode_and_write_impostor_png(&abs_path, &rgba)
-            })
-            .await;
+            let result =
+                crate::web::spawn_blocking(move || encode_and_write_impostor_png(&abs_path, &rgba))
+                    .await;
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {

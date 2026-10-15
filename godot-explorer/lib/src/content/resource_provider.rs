@@ -1,3 +1,4 @@
+use crate::web::fs;
 use futures_util::StreamExt;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
@@ -5,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::fs;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, OnceCell, RwLock};
 use tokio::time::{timeout, Instant};
@@ -434,7 +434,7 @@ impl ResourceProvider {
             let mut existing_files = self.existing_files.write().await;
             self.touch_file(&mut existing_files, absolute_file_path);
         }
-        tokio::fs::metadata(absolute_file_path)
+        crate::web::fs::metadata(absolute_file_path)
             .await
             .map(|_| ())
             .map_err(|e| format!("Failed to stat cached file: {:?}", e))
@@ -608,7 +608,7 @@ impl ResourceProvider {
         // Run the fallible download/cache work, then ALWAYS release the pending-download
         // slot below — success or failure — so a failed download can't poison the hash (F-2).
         let result: Result<(), String> = async {
-            if tokio::fs::metadata(&absolute_file_path).await.is_err() {
+            if crate::web::fs::metadata(&absolute_file_path).await.is_err() {
                 self.download_file(
                     &url,
                     Path::new(&absolute_file_path),
@@ -617,7 +617,7 @@ impl ResourceProvider {
                 )
                 .await?;
 
-                let metadata = tokio::fs::metadata(&absolute_file_path)
+                let metadata = crate::web::fs::metadata(&absolute_file_path)
                     .await
                     .map_err(|e| format!("Failed to get metadata: {:?}", e))?;
                 let file_size = metadata.len() as i64;
@@ -660,7 +660,7 @@ impl ResourceProvider {
 
         // Always release the pending-download slot below, success or failure (F-2).
         let result: Result<(), String> = async {
-            if tokio::fs::metadata(&absolute_file_path).await.is_err() {
+            if crate::web::fs::metadata(&absolute_file_path).await.is_err() {
                 self.download_file(
                     &url,
                     Path::new(&absolute_file_path),
@@ -669,7 +669,7 @@ impl ResourceProvider {
                 )
                 .await?;
 
-                let metadata = tokio::fs::metadata(&absolute_file_path)
+                let metadata = crate::web::fs::metadata(&absolute_file_path)
                     .await
                     .map_err(|e| format!("Failed to get metadata: {:?}", e))?;
                 let file_size = metadata.len() as i64;
@@ -708,7 +708,7 @@ impl ResourceProvider {
         let permit = self.semaphore.acquire().await;
         // Always release the pending-download slot below, success or failure (F-2).
         let result: Result<Vec<u8>, String> = async {
-            if tokio::fs::metadata(&absolute_file_path).await.is_err() {
+            if crate::web::fs::metadata(&absolute_file_path).await.is_err() {
                 let data = self
                     .download_file_with_buffer(
                         url,
@@ -717,7 +717,7 @@ impl ResourceProvider {
                         file_hash.clone(),
                     )
                     .await?;
-                let metadata = tokio::fs::metadata(absolute_file_path)
+                let metadata = crate::web::fs::metadata(absolute_file_path)
                     .await
                     .map_err(|e| format!("Failed to get metadata: {:?}", e))?;
                 let file_size = metadata.len() as i64;
@@ -851,8 +851,8 @@ mod tests {
     }
 
     async fn setup_cache_folder(path: &str) -> Result<()> {
-        if tokio::fs::metadata(path).await.is_err() {
-            tokio::fs::create_dir_all(path).await?;
+        if crate::web::fs::metadata(path).await.is_err() {
+            crate::web::fs::create_dir_all(path).await?;
         }
         Ok(())
     }
@@ -973,7 +973,7 @@ mod tests {
             .expect("retry after a failed download should succeed, not hang");
 
         provider.clear().await;
-        let _ = tokio::fs::remove_dir_all(path).await;
+        let _ = crate::web::fs::remove_dir_all(path).await;
     }
 
     /// Arweave images must download through arweave.net's CDN bot protection
@@ -1020,7 +1020,7 @@ mod tests {
         );
 
         provider.clear().await;
-        let _ = tokio::fs::remove_dir_all(path).await;
+        let _ = crate::web::fs::remove_dir_all(path).await;
     }
 
     #[tokio::test]
@@ -1118,6 +1118,6 @@ mod tests {
             assert!(existing_files.is_empty());
         }
 
-        let _ = tokio::fs::remove_dir_all(path).await;
+        let _ = crate::web::fs::remove_dir_all(path).await;
     }
 }

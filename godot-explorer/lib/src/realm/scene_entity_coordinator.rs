@@ -190,6 +190,9 @@ impl SceneEntityCoordinator {
                 }
             });
         } else {
+            #[cfg(target_family = "wasm")]
+            tracing::error!("SceneEntityCoordinator: no tokio runtime; request dropped");
+            #[cfg(not(target_family = "wasm"))]
             std::thread::spawn(move || {
                 let runtime = tokio::runtime::Runtime::new();
                 if runtime.is_err() {

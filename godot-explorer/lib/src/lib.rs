@@ -4,6 +4,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+#[cfg(target_family = "wasm")]
+extern crate reqwest_web as reqwest;
+
 use godot::prelude::*;
 
 /// User-Agent for all outgoing reqwest HTTP clients. reqwest sends none by
@@ -42,6 +45,7 @@ pub mod test_runner;
 pub mod tools;
 pub mod urls;
 pub mod utils;
+pub mod web;
 
 struct DecentralandGodotLibrary;
 

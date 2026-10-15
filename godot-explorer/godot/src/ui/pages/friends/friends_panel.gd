@@ -77,6 +77,9 @@ var _is_loading: bool = false
 
 
 func _ready() -> void:
+	if LocalPreviewRuntime.is_enabled():
+		process_mode = Node.PROCESS_MODE_DISABLED
+		return
 	# The section title + count come from the child labels (Label / Label_*Count), so the
 	# buttons themselves carry no text.
 	online_button.text = ""

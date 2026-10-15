@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mobile scene preview</title>
+<style>
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #19191c; color: #eee; font: 14px system-ui; }
+canvas { display: block; width: 100%; height: 100%; outline: none; }
+body.local-preview { display: grid; place-items: center; }
+body.local-preview canvas { width: min(100vw, calc(100vh * 20 / 9)); height: min(100vh, calc(100vw * 9 / 20)); }
+#status { position: fixed; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; pointer-events: none; }
+#status[hidden] { display: none; }
+</style>
+$GODOT_HEAD_INCLUDE
+<script>// Godot sizes the canvas to CSS size x devicePixelRatio; cap it at ~1920x1080 device pixels (?maxpixels=N to change, ?maxpixels=native to disable).
+(() => {
+  const arg = new URLSearchParams(location.search).get('maxpixels');
+  const budget = arg === 'native' ? Infinity : Number(arg) || 1920 * 1080;
+  const local = (new URLSearchParams(location.search).get('args') || '').split(' ').includes('--local-editor-preview');
+  let o = window, d;
+  while (o && !(d = Object.getOwnPropertyDescriptor(o, 'devicePixelRatio'))) o = Object.getPrototypeOf(o);
+  if (!d || !d.get) return;
+  Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: () =>
+    local ? 1 : Math.min(d.get.call(window), Math.max(0.5, Math.sqrt(budget / (innerWidth * innerHeight)))) });
+})();
+</script>
+<script>// Opened as the web editor's phone preview: no preview server answers this page's realm socket,
+// so stand in for it and pass on the editor's builds as its SCENE_UPDATE (a hot reload, no restart).
+(() => {
+  const args = (new URLSearchParams(location.search).get('args') || '').split(' ');
+  const after = (flag) => { const at = args.indexOf(flag); return at >= 0 ? args[at + 1] : null; };
+  // the realm a preview deep link names (as the desktop QR opens it), else --realm
+  const link = after('--fake-deeplink');
+  const realm = (link && new URL(link).searchParams.get('preview')) || after('--realm');
+  if (!realm || !('BroadcastChannel' in window)) return;
+  const bare = (u) => { const s = String(u).toLowerCase(); return s.endsWith('/') ? s.slice(0, -1) : s; };
+  const socketUrl = bare(realm).replace('http://', 'ws://').replace('https://', 'wss://');
+  const Native = window.WebSocket;
+  const open = new Set();
+  function PreviewSocket(url, protocols) {
+    if (bare(url) !== socketUrl) return protocols === undefined ? new Native(url) : new Native(url, protocols);
+    const socket = {
+      url, protocol: '', extensions: '', binaryType: 'blob', bufferedAmount: 0, readyState: 0,
+      CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3,
+      onopen: null, onmessage: null, onerror: null, onclose: null,
+      send() {},
+      close(code, reason) {
+        socket.readyState = 3;
+        open.delete(socket);
+        if (socket.onclose) socket.onclose({ code: code || 1000, reason: reason || '', wasClean: true });
+      }
+    };
+    open.add(socket);
+    setTimeout(() => { socket.readyState = 1; if (socket.onopen) socket.onopen({}); }, 0);
+    return socket;
+  }
+  Object.assign(PreviewSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3, prototype: Native.prototype });
+  window.WebSocket = PreviewSocket;
+  new BroadcastChannel('dcl-phone-preview').onmessage = (e) => {
+    const m = e.data;
+    if (!m || m.type !== 'scene-updated' || m.realm !== realm) return;
+    const data = JSON.stringify({ type: 'SCENE_UPDATE', payload: { sceneId: m.entityId } });
+    for (const socket of open) if (socket.readyState === 1 && socket.onmessage) socket.onmessage({ data });
+  };
+})();
+</script>
+</head>
+<body>
+<canvas id="canvas" tabindex="0"></canvas>
+<div id="status"><span id="message">Starting mobile preview…</span><progress id="progress"></progress></div>
+<script src="livekit-client.umd.js"></script>
+<script src="scene-comms.js"></script>
+<script src="pulse.js"></script>
+<script src="$GODOT_URL"></script>
+<script>
+const config = $GODOT_CONFIG;
+const params = new URLSearchParams(location.search);
+const args = (params.get('args') || '').split(' ').filter(Boolean);
+const localPreview = args.includes('--local-editor-preview');
+if (localPreview && !args.includes('--force-mobile')) args.push('--force-mobile');
+if (localPreview && !args.includes('--no-pulse') && !args.includes('--pulse')) args.push('--pulse');
+const session = params.get('previewSession');
+const instance = params.get('previewInstance');
+const channel = new BroadcastChannel('dcl-phone-preview');
+let stopped = false;
+let device;
+let ready = false;
+let hostVisible = true;
+const updateVisibility = () => {
+  if (localPreview && ready) window.setLocalPreviewVisible?.(hostVisible && !document.hidden);
+};
+if (localPreview) document.addEventListener('visibilitychange', updateVisibility);
+const send = (message) => channel.postMessage({ ...message, session, instance });
+window.localPreviewReady = () => {
+  ready = true;
+  updateVisibility();
+  document.getElementById('status').hidden = true;
+  send({ type: 'ready' });
+};
+window.addEventListener('pagehide', () => send({ type: 'closed' }), { once: true });
+channel.onmessage = async ({ data: message }) => {
+  if (!message || message.session !== session || message.instance !== instance) return;
+  if (message.type === 'visibility' && typeof message.visible === 'boolean') {
+    hostVisible = message.visible;
+    updateVisibility();
+    return;
+  }
+  if (message.type === 'stop') {
+    stopped = true;
+    window.godotEngine?.requestQuit();
+    device?.destroy();
+    if (window.parent === window) window.close();
+    location.replace('about:blank');
+  }
+  if (message.type !== 'capture' || typeof message.requestId !== 'string') return;
+  try {
+    if (!ready) throw new Error('The mobile scene is still loading.');
+    if (!hostVisible || document.hidden) throw new Error('Restore the mobile preview and bring it forward before taking a picture.');
+    await new Promise(requestAnimationFrame);
+    const source = document.getElementById('canvas');
+    const scale = Math.min(1, 1024 / Math.max(source.width, source.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(source.width * scale));
+    canvas.height = Math.max(1, Math.round(source.height * scale));
+    const context = canvas.getContext('2d');
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+    const image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+    send({ type: 'capture', requestId: message.requestId, image, width: canvas.width, height: canvas.height });
+  } catch (error) {
+    send({ type: 'capture', requestId: message.requestId, error: String(error) });
+  }
+};
+async function initWebGPU() {
+	if (typeof navigator.gpu === 'undefined') {
+		console.warn('WebGPU not supported in this browser. See https://caniuse.com/webgpu for support information.');
+		return null;
+	}
+
+	let adapter;
+	try {
+		adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+	} catch (e) {
+		console.warn('WebGPU: Failed to request adapter:', e);
+		return null;
+	}
+	if (!adapter) {
+		console.warn('WebGPU: No GPU adapter available (hardware or driver not supported).');
+		return null;
+	}
+
+	// Log adapter info for debugging.
+	const adapterInfo = adapter.info || {};
+	console.info('WebGPU adapter:', adapterInfo.description || adapterInfo.vendor || '(unknown)');
+
+	// Request optional features that Godot can use if available.
+	const wantedFeatures = [
+		'texture-compression-bc',
+		'texture-compression-etc2',
+		'texture-compression-astc',
+		'depth-clip-control',
+		'depth32float-stencil8',
+		'indirect-first-instance',
+		'rg11b10ufloat-renderable',
+		'bgra8unorm-storage',
+		'float32-filterable',
+	];
+	const requiredFeatures = wantedFeatures.filter((f) => adapter.features.has(f));
+
+	// Request limits that Godot's renderer needs.
+	const requiredLimits = {};
+	const wantedLimits = {
+		maxTextureDimension2D: 16384,
+		maxTextureArrayLayers: 2048,
+		maxBindGroups: 4,
+		maxBindingsPerBindGroup: 640,
+		maxDynamicUniformBuffersPerPipelineLayout: 8,
+		maxDynamicStorageBuffersPerPipelineLayout: 4,
+		maxSampledTexturesPerShaderStage: 16,
+		maxSamplersPerShaderStage: 16,
+		maxStorageBuffersPerShaderStage: 16,
+		maxStorageTexturesPerShaderStage: 4,
+		maxUniformBuffersPerShaderStage: 12,
+		maxUniformBufferBindingSize: 65536,
+		maxStorageBufferBindingSize: 134217728,
+		maxVertexBuffers: 8,
+		maxVertexAttributes: 16,
+		maxColorAttachments: 8,
+	};
+	for (const [limit, value] of Object.entries(wantedLimits)) {
+		if (limit in adapter.limits) {
+			requiredLimits[limit] = Math.min(value, adapter.limits[limit]);
+		}
+	}
+	// As engine.js does without a pre-initialized device: the adapter's maximum. Below 17
+	// inter-stage variables some scene materials fail to compile and render magenta.
+	for (const limit of ['maxInterStageShaderVariables', 'maxBufferSize', 'maxUniformBufferBindingSize', 'maxStorageBufferBindingSize']) {
+		if (limit in adapter.limits) {
+			requiredLimits[limit] = adapter.limits[limit];
+		}
+	}
+
+	let device;
+	try {
+		device = await adapter.requestDevice({ requiredFeatures, requiredLimits });
+	} catch (e) {
+		console.warn('WebGPU: Failed to request device:', e);
+		return null;
+	}
+
+	device.lost.then((info) => {
+		console.error('WebGPU device lost:', info.reason, info.message);
+	});
+
+	console.info('WebGPU device ready. Features:', [...device.features].join(', ') || '(none)');
+	return device;
+}
+
+
+(async () => {
+  try {
+    device = await initWebGPU();
+    if (stopped) { device?.destroy(); return; }
+    if (!device) throw new Error('WebGPU is unavailable. Open this preview in a browser with hardware WebGPU enabled.');
+    config.args = [...(config.args || []), ...args];
+    config.preinitializedWebGPUDevice = device;
+    // Local previews must not restore a growing content cache into RAM at startup.
+    if (localPreview) {
+      config.persistentPaths = [];
+      config.canvasResizePolicy = 0;
+      document.body.classList.add('local-preview');
+      document.getElementById('canvas').width = 1600;
+      document.getElementById('canvas').height = 720;
+    }
+    const engine = new Engine(config);
+    window.godotEngine = engine;
+    await engine.startGame({
+      onProgress: (current, total) => {
+        const progress = document.getElementById('progress');
+        progress.max = total || 1;
+        progress.value = current;
+      }
+    });
+    if (localPreview) {
+      // Engine startup applies the project's portrait window override once.
+      document.getElementById('canvas').width = 1600;
+      document.getElementById('canvas').height = 720;
+    } else window.localPreviewReady();
+  } catch (error) {
+    console.error(error);
+    document.getElementById('message').textContent = String(error);
+    document.getElementById('progress').hidden = true;
+  }
+})();
+</script>
+</body>
+</html>

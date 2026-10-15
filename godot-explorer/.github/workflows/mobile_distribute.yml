@@ -54,11 +54,13 @@ jobs:
     # Run for: push to release, the weekday main cron, a manual dispatch, or the
     # build / build-ios label on a PR.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'push' ||
-      github.event.label.name == 'build' ||
-      github.event.label.name == 'build-ios'
+      github.repository == 'decentraland/godot-explorer' && (
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'push' ||
+        github.event.label.name == 'build' ||
+        github.event.label.name == 'build-ios'
+      )
     runs-on: ubuntu-latest
     outputs:
       ref: ${{ steps.ctx.outputs.ref }}
@@ -90,20 +92,23 @@ jobs:
         id: ctx
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            REF="${{ github.event.inputs.ref }}"
+            REF="$INPUT_REF"
             SHA=$(gh api "repos/${{ github.repository }}/commits/${REF}" --jq '.sha')
             PR_NUMBER=""
             TRIGGERED_BY="manual by ${{ github.actor }}"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            REF="${{ github.ref_name }}"; SHA="${{ github.sha }}"; PR_NUMBER=""
+            REF="$REF_NAME"; SHA="${{ github.sha }}"; PR_NUMBER=""
             TRIGGERED_BY="daily trigger"
           elif [ "${{ github.event_name }}" = "push" ]; then
-            REF="${{ github.ref_name }}"; SHA="${{ github.sha }}"; PR_NUMBER=""
+            REF="$REF_NAME"; SHA="${{ github.sha }}"; PR_NUMBER=""
             TRIGGERED_BY="push to ${REF}"
           else
-            REF="${{ github.event.pull_request.head.ref }}"
+            REF="$HEAD_REF"
             SHA="${{ github.event.pull_request.head.sha }}"
             PR_NUMBER="${{ github.event.pull_request.number }}"
             TRIGGERED_BY="label by ${{ github.actor }}"
@@ -218,12 +223,13 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           for STATUS in in_progress queued; do
             IDS=$(gh run list \
               --repo "${{ github.repository }}" \
               --workflow mobile_distribute.yml \
-              --branch "${{ github.event.pull_request.head.ref }}" \
+              --branch "$HEAD_REF" \
               --status "$STATUS" \
               --json databaseId \
               --jq '.[].databaseId')

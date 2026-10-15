@@ -1,8 +1,11 @@
+#[cfg(not(target_family = "wasm"))]
 use ethers_providers::{Provider, Ws};
+#[cfg(not(target_family = "wasm"))]
 use tokio::sync::Mutex;
 
 use crate::urls;
 
+#[cfg(not(target_family = "wasm"))]
 pub struct EthereumProvider {
     provider: Mutex<Option<Provider<Ws>>>,
 }
@@ -13,6 +16,7 @@ impl Default for EthereumProvider {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl EthereumProvider {
     pub fn new() -> Self {
         Self {
@@ -43,6 +47,46 @@ impl EthereumProvider {
                 Err(anyhow::Error::new(e))
             }
             Ok(result) => Ok(result),
+        }
+    }
+}
+
+/// Browsers can't use the ethers WebSocket provider; the same JSON-RPC goes over HTTPS POST.
+#[cfg(target_family = "wasm")]
+pub struct EthereumProvider {
+    client: reqwest::Client,
+}
+
+#[cfg(target_family = "wasm")]
+impl EthereumProvider {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+        }
+    }
+
+    pub async fn send_async(
+        &self,
+        method: &str,
+        params: &[serde_json::Value],
+    ) -> Result<serde_json::Value, anyhow::Error> {
+        let url = urls::ethereum_rpc_with_project("kernel-local").replacen("wss://", "https://", 1);
+        let body =
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        let response: serde_json::Value = self
+            .client
+            .post(url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+        match response.get("error") {
+            Some(error) => Err(anyhow::anyhow!("JSON-RPC error: {error}")),
+            None => Ok(response
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)),
         }
     }
 }
