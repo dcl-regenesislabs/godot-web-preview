@@ -1,0 +1,8 @@
+{
+  "ecs7": true,
+  "runtimeVersion": "7",
+  "display": { "title": "Scene UI input regression" },
+  "main": "bin/index.js",
+  "scene": { "parcels": ["0,0"], "base": "0,0" },
+  "spawnPoints": [{ "name": "default", "default": true, "position": { "x": 8, "y": 0, "z": 8 }, "cameraTarget": { "x": 8, "y": 1, "z": 10 } }]
+}

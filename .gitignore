@@ -1,0 +1,28 @@
+# Only the files listed here are tracked; the three folders below are submodules.
+/*
+!/.gitignore
+!/.gitmodules
+!/README.md
+!/CLAUDE.md
+!/build.sh
+!/godot-explorer
+!/godotengine
+!/emsdk
+!/tests
+!/scripts
+!/.github
+!/packages
+/packages/*/dist/
+/packages/*/*.tgz
+
+# Test project outputs
+/tests/*/.godot/
+/tests/*/build/
+/tests/*/bin/
+/tests/*/*.log
+/tests/*/*.png
+/tests/*/*.import
+/tests/*/*.spv
+/tests/*/tint_out.txt
+/tests/gdext-hello/target/
+.DS_Store

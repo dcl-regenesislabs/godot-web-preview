@@ -1,0 +1,14 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0105"
+ignoreUntil = 2026-11-15
+reason = "Maintenance-only notice for transitive core2; replacement requires the upstream multihash dependency migration. No vulnerability is reported by this advisory."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0384"
+ignoreUntil = 2026-11-15
+reason = "Maintenance-only notice for transitive instant; migrate upstream to web-time. No vulnerability is reported by this advisory."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0050"
+ignoreUntil = 2026-11-15
+reason = "Maintenance-only notice for transitive multipart. No vulnerability is reported by this advisory."

@@ -1,0 +1,16 @@
+config_version=5
+
+[application]
+config/name="WebGPU texture round trip"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=960
+window/size/viewport_height=540
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.web="mobile"
+rendering_device/driver.web="webgpu"
+environment/defaults/default_clear_color=Color(0.08, 0.08, 0.08, 1)

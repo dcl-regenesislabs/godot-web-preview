@@ -1,0 +1,126 @@
+name: Mobile preview
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 360
+    steps:
+      - name: Require private source access
+        env:
+          SOURCE_TOKEN: ${{ secrets.GODOT_SOURCE_TOKEN }}
+        run: |
+          test -n "$SOURCE_TOKEN" || { echo '::error::Add GODOT_SOURCE_TOKEN with Contents read access to both private source submodules.'; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          token: ${{ secrets.GODOT_SOURCE_TOKEN }}
+          persist-credentials: false
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node packages/runtime/scripts/check-release.mjs
+      - uses: ./.github/actions/build-preview
+      - name: Audit browser dependencies offline
+        run: bash scripts/audit-browser.sh
+      - name: Audit browser JavaScript dependencies
+        run: npm audit --prefix godot-explorer/web/tools --omit=dev --audit-level=high
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mobile-preview-export
+          path: godot-explorer/build/web/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webgpu-regressions
+          path: tests/*/build/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: export-logs
+          path: godot-explorer/build/*.log
+  browser:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GODOT_SOURCE_TOKEN }}
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: webgpu-regressions
+          path: tests
+      - run: npm ci --prefix godot-explorer/web/tools
+      - run: npx --prefix godot-explorer/web/tools playwright install --with-deps chromium
+      - run: sudo apt-get install -y xvfb xauth libvulkan1 mesa-vulkan-drivers
+      - name: Check WebGPU regressions
+        run: |
+          xvfb-run -a node godot-explorer/web/tools/run-web.mjs tests/webgpu-texture-roundtrip/build 90 texture.png --ci --headed --assert=textureRoundtripResult
+          xvfb-run -a node godot-explorer/web/tools/run-web.mjs tests/webgpu-buffer-coherence/build 90 buffers.png --ci --headed --assert=bufferCoherenceResult
+          xvfb-run -a node godot-explorer/web/tools/run-web.mjs tests/webgpu-frame-pacing/build 90 pacing.png --ci --headed --assert=framePacingResult
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-screenshots
+          path: '*.png'
+  package:
+    needs: [build, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: mobile-preview-export
+          path: runtime-export
+      - run: npm test --prefix packages/runtime
+      - run: npm run build --prefix packages/runtime -- "$GITHUB_WORKSPACE/runtime-export"
+      - run: npm pack ./packages/runtime
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mobile-preview-npm
+          path: dcl-regenesislabs-mobile-preview-runtime-*.tgz
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    if: github.repository == 'kuruk-mm/test-godot-web' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mobile-preview-npm
+      - run: npm publish ./dcl-regenesislabs-mobile-preview-runtime-*.tgz --access public --tag latest --provenance=false

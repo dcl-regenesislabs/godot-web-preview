@@ -1,0 +1,66 @@
+[gd_scene load_steps=12 format=3]
+
+[sub_resource type="Environment" id="env"]
+background_mode = 1
+background_color = Color(0.3, 0.4, 0.6, 1)
+ambient_light_source = 2
+ambient_light_color = Color(1, 1, 1, 1)
+
+[sub_resource type="StandardMaterial3D" id="unshaded_red"]
+shading_mode = 0
+albedo_color = Color(1, 0, 0, 1)
+
+[sub_resource type="StandardMaterial3D" id="lit_red"]
+albedo_color = Color(1, 0, 0, 1)
+
+[sub_resource type="Gradient" id="grad"]
+colors = PackedColorArray(0, 1, 0, 1, 0, 0, 1, 1)
+
+[sub_resource type="GradientTexture2D" id="gtex"]
+gradient = SubResource("grad")
+
+[sub_resource type="StandardMaterial3D" id="textured"]
+albedo_texture = SubResource("gtex")
+
+[sub_resource type="StandardMaterial3D" id="vcolor"]
+vertex_color_use_as_albedo = true
+albedo_color = Color(1, 1, 0, 1)
+
+[sub_resource type="BoxMesh" id="b1"]
+material = SubResource("unshaded_red")
+
+[sub_resource type="BoxMesh" id="b2"]
+material = SubResource("lit_red")
+
+[sub_resource type="BoxMesh" id="b3"]
+material = SubResource("textured")
+
+[sub_resource type="BoxMesh" id="b4"]
+material = SubResource("vcolor")
+
+[node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.354, 0.354, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 0, 5, 0)
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 5)
+
+[node name="UnshadedRed" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.4, 0, 0)
+mesh = SubResource("b1")
+
+[node name="LitRed" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.8, 0, 0)
+mesh = SubResource("b2")
+
+[node name="Textured" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.8, 0, 0)
+mesh = SubResource("b3")
+
+[node name="VColorYellow" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.4, 0, 0)
+mesh = SubResource("b4")

@@ -1,0 +1,10 @@
+{
+  "name": "scene-ui-input-regression",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "build": "sdk-commands build", "start": "sdk-commands start" },
+  "devDependencies": {
+    "@dcl/sdk": "7.30.2-38470202470.commit-ee06955",
+    "@dcl/sdk-commands": "7.30.2-38470202470.commit-ee06955"
+  }
+}

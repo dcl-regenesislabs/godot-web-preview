@@ -1,0 +1,36 @@
+{
+  "name": "@dcl-regenesislabs/mobile-preview-runtime",
+  "version": "0.1.0",
+  "description": "Prebuilt Godot WebGPU runtime for local mobile scene previews",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kuruk-mm/test-godot-web.git",
+    "directory": "packages/runtime"
+  },
+  "files": [
+    "dist",
+    "scripts/check-dist.mjs",
+    "README.md",
+    "LICENSE",
+    "GODOT-LICENSE.txt",
+    "GODOT-COPYRIGHT.txt"
+  ],
+  "exports": {
+    "./package.json": "./package.json",
+    "./manifest.json": "./dist/manifest.json",
+    "./check": "./scripts/check-dist.mjs"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/check-dist.mjs",
+    "test": "node --test *.test.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

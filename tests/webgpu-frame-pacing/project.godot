@@ -1,0 +1,10 @@
+config_version=5
+
+[application]
+config/name="Browser frame pacing"
+run/main_scene="res://main.tscn"
+
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.web="mobile"
+rendering_device/driver.web="webgpu"

@@ -1,0 +1,11 @@
+[target.wasm32-unknown-emscripten]
+rustflags = [
+    "-C", "link-args=-sSIDE_MODULE=2",
+    "-C", "panic=abort",
+    "-C", "llvm-args=-enable-emscripten-cxx-exceptions=0",
+    "-C", "target-feature=+bulk-memory,+mutable-globals",
+    "-Z", "link-native-libraries=no",
+]
+
+[unstable]
+build-std = ["std", "panic_abort"]

@@ -1,0 +1,5 @@
+{
+  "extends": "@dcl/sdk/types/tsconfig.ecs7.json",
+  "compilerOptions": { "jsx": "react", "jsxFactory": "ReactEcs.createElement" },
+  "include": ["src"]
+}

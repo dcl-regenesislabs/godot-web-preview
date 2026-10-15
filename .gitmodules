@@ -1,0 +1,7 @@
+[submodule "emsdk"]
+    path = emsdk
+    url = https://github.com/emscripten-core/emsdk.git
+[submodule "ios-engine"]
+    path = godot-explorer/plugins/dcl-godot-ios/godot
+    url = https://github.com/decentraland/godotengine.git
+    branch = 4.6.2

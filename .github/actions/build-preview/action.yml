@@ -1,0 +1,70 @@
+name: Build mobile web runtime
+description: Build the pinned engine, Rust extension, content and regression scenes
+inputs:
+  directory:
+    description: Checkout of test-godot-web, relative to the workspace
+    default: '.'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+    - name: Install SCons and Rust
+      shell: bash
+      run: |
+        python -m pip install scons==4.11.1
+        rustup toolchain install 1.90 --profile minimal
+        rustup toolchain install nightly-2026-09-15 --profile minimal --component rust-src
+    - name: Check engine algorithms
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: node godotengine/webgpu_tests/driver_unit_tests/run_tests.mjs
+    - name: Runtime unit tests
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: node --test tests/*.test.mjs packages/runtime/*.test.mjs godot-explorer/godot/web/preview.test.mjs godot-explorer/web/tools/scene-comms.test.mjs godot-explorer/web/tools/scene-gameplay.test.mjs godot-explorer/web/tools/pulse.test.mjs
+    - name: Engine cache key
+      id: engine
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: echo "revision=$(git -C godotengine rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      id: template
+      with:
+        path: ${{ inputs.directory }}/godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
+        key: mobile-template-${{ runner.os }}-${{ runner.arch }}-${{ steps.engine.outputs.revision }}-${{ hashFiles(format('{0}/build.sh', inputs.directory)) }}-v1
+    - name: Install Emscripten
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: ./build.sh emsdk
+    - name: Build engine
+      if: steps.template.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: ./build.sh engine
+    - name: Build native importer, web extension and preview
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: ./build.sh native wasm preview
+    - name: Check gameplay and Pulse protocol
+      shell: bash
+      working-directory: ${{ inputs.directory }}/godot-explorer/lib
+      run: |
+        cargo test --locked --lib --no-default-features --features use_pulse comms::pulse:: -j 2
+        cargo test --locked --lib --no-default-features --features use_pulse scene_ -j 2
+        cargo check --locked --no-default-features --features use_deno -j 2
+    - name: Export regression fixtures
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: |
+        ./build.sh test webgpu-frame-pacing
+        ./build.sh test webgpu-texture-roundtrip
+        ./build.sh test webgpu-buffer-coherence
+    - name: Check content thread guards
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      run: node --test godot-explorer/web/tools/thread-safety.test.mjs
