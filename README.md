@@ -132,11 +132,22 @@ In the editor, verify first-click UI actions, camera dragging, joystick movement
 minimize/restore, screenshots, detaching and scene reload. Only one preview instance
 should run at a time.
 
-CI builds on macOS, checks engine algorithms and runtime protocols, audits browser
-dependencies, then runs texture, buffer and frame-pacing regressions in Linux
-Chromium with SwiftShader. Packaging waits for all three graphics checks. Workflow
-artifacts include the export, npm tarball and regression screenshots. Passing
-software-rendered graphics checks does not establish device performance.
+CI runs unit tests and dependency audits first, then builds the engine on a
+four-core Linux runner alongside the Rust client on a three-core macOS runner.
+Dedicated runners use normal CPU priority; local builds keep their two-job,
+background defaults. Export runs on macOS after both builds and the native
+gameplay/Pulse/compatibility checks pass. Texture, buffer and frame-pacing
+regressions run in Linux Chromium with SwiftShader before packaging.
+
+The engine ZIP is cached by source tree and toolchain inputs and saved immediately
+after compilation. Emscripten installations and Cargo dependencies are cached too;
+Rust still rebuilds the workspace crates. Documentation-only changes skip
+compilation and packaging; manual runs and release tags always run the full
+pipeline. New commits cancel obsolete validation runs, while release runs finish.
+Cold and cached build times differ; use the separate Actions steps to measure both.
+
+Workflow artifacts include the export, npm tarball and regression screenshots.
+Passing software-rendered graphics checks does not establish device performance.
 
 ## npm releases
 

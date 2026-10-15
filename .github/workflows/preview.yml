@@ -1,6 +1,7 @@
 name: Mobile preview
 on:
   pull_request:
+    types: [opened, synchronize, reopened, closed]
   push:
     branches: [main]
     tags: ['[0-9]*']
@@ -8,26 +9,172 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: preview-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
-  build:
-    runs-on: macos-14
-    timeout-minutes: 360
+  checks:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      build: ${{ steps.scope.outputs.build }}
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Select build scope
+        id: scope
+        run: node scripts/ci-scope.mjs
       - name: Check release version
         if: startsWith(github.ref, 'refs/tags/')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node packages/runtime/scripts/check-release.mjs
-      - uses: ./.github/actions/build-preview
+      - name: Check engine algorithms
+        run: node godotengine/webgpu_tests/driver_unit_tests/run_tests.mjs
+      - name: Runtime unit tests
+        run: node --test tests/*.test.mjs packages/runtime/*.test.mjs godot-explorer/godot/web/preview.test.mjs godot-explorer/web/tools/{scene-comms,scene-gameplay,pulse}.test.mjs
       - name: Audit browser dependencies offline
         run: bash scripts/audit-browser.sh
       - name: Audit browser JavaScript dependencies
         run: npm audit --prefix godot-explorer/web/tools --omit=dev --audit-level=high
+  engine:
+    needs: checks
+    if: needs.checks.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      JOBS: 4
+      BUILD_PRIORITY: normal
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Engine cache key
+        id: engine
+        run: |
+          echo "revision=$(git rev-parse HEAD:godotengine)" >> "$GITHUB_OUTPUT"
+          echo "emsdk=$(git rev-parse HEAD:emsdk)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: template
+        with:
+          path: godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
+          key: mobile-template-${{ runner.os }}-${{ runner.arch }}-${{ steps.engine.outputs.revision }}-${{ steps.engine.outputs.emsdk }}-${{ hashFiles('build.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}-v2
+      - uses: actions/setup-python@v6
+        if: steps.template.outputs.cache-hit != 'true'
+        with:
+          python-version: '3.13'
+      - uses: ./.github/actions/setup-emsdk
+        if: steps.template.outputs.cache-hit != 'true'
+      - name: Build engine
+        if: steps.template.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install scons==4.11.1
+          ./build.sh engine
+      - name: Save engine before downstream checks
+        uses: actions/cache/save@v4
+        if: steps.template.outputs.cache-hit != 'true'
+        with:
+          path: godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
+          key: ${{ steps.template.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-template
+          path: godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+  runtime:
+    needs: checks
+    if: needs.checks.outputs.build == 'true'
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      JOBS: 3
+      BUILD_PRIORITY: normal
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.90 --profile minimal
+          rustup default 1.90
+          rustup toolchain install nightly-2026-09-15 --profile minimal --component rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            godot-explorer -> target
+            godot-explorer/lib -> target
+          key: preview-nightly-2026-09-15-${{ hashFiles('build.sh', 'godot-explorer/web/wasm-env.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}
+          cache-on-failure: true
+          cache-bin: false
+      - uses: ./.github/actions/setup-emsdk
+      - name: Build native importer
+        run: ./build.sh native
+      - name: Build web extension
+        run: ./build.sh wasm
+      - name: Check gameplay, Pulse and native compatibility
+        run: bash scripts/check-native.sh
+      - name: Archive export inputs
+        run: |
+          tar -czf "$RUNNER_TEMP/runtime-inputs.tar.gz" \
+            godot-explorer/.bin/godot/godot4_bin \
+            godot-explorer/godot/addons/sentry/bin/macos \
+            godot-explorer/lib/target/libdclgodot_macos/libdclgodot.dylib \
+            godot-explorer/lib/target/wasm32-unknown-emscripten/release/dclgodot.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-inputs
+          path: ${{ runner.temp }}/runtime-inputs.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+  build:
+    needs: [engine, runtime]
+    runs-on: macos-14
+    timeout-minutes: 15
+    env:
+      BUILD_PRIORITY: normal
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-template
+          path: godotengine/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-inputs
+          path: ${{ runner.temp }}
+      - name: Restore export inputs
+        run: tar -xzf "$RUNNER_TEMP/runtime-inputs.tar.gz"
+      - name: Export preview
+        run: ./build.sh preview
+      - name: Export regression fixtures
+        run: |
+          ./build.sh test webgpu-frame-pacing
+          ./build.sh test webgpu-texture-roundtrip
+          ./build.sh test webgpu-buffer-coherence
+      - name: Check content thread guards
+        run: node --test godot-explorer/web/tools/thread-safety.test.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: mobile-preview-export
@@ -44,7 +191,9 @@ jobs:
         if: failure()
         with:
           name: export-logs
-          path: godot-explorer/build/*.log
+          path: |
+            godot-explorer/build/*.log
+            tests/*/build/export.log
   browser:
     needs: build
     runs-on: ubuntu-latest
