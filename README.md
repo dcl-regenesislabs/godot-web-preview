@@ -132,8 +132,8 @@ In the editor, verify first-click UI actions, camera dragging, joystick movement
 minimize/restore, screenshots, detaching and scene reload. Only one preview instance
 should run at a time.
 
-CI runs unit tests and dependency audits first, then builds the engine on a
-four-core Linux runner alongside the Rust client on a three-core macOS runner.
+CI runs unit tests and dependency audits first, then builds the engine and Rust client
+in parallel on separate three-core macOS runners.
 Dedicated runners use normal CPU priority; local builds keep their two-job,
 background defaults. Export runs on macOS after both builds and the native
 gameplay/Pulse/compatibility checks pass. Texture, buffer and frame-pacing

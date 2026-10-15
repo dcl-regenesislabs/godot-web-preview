@@ -48,10 +48,11 @@ jobs:
   engine:
     needs: checks
     if: needs.checks.outputs.build == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: macos-14
     timeout-minutes: 45
     env:
-      JOBS: 4
+      JOBS: 3
+      SCONS_VERSION: '4.11.1'
       BUILD_PRIORITY: normal
     steps:
       - uses: actions/checkout@v7
@@ -66,17 +67,19 @@ jobs:
         id: template
         with:
           path: godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
-          key: mobile-template-${{ runner.os }}-${{ runner.arch }}-${{ steps.engine.outputs.revision }}-${{ steps.engine.outputs.emsdk }}-${{ hashFiles('build.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}-v2
+          key: mobile-template-webgpu-scons-${{ env.SCONS_VERSION }}-${{ steps.engine.outputs.revision }}-${{ steps.engine.outputs.emsdk }}-${{ hashFiles('build.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}-v3
+          # Web templates are portable; reuse the previous Linux key with identical inputs.
+          restore-keys: ${{ env.SCONS_VERSION == '4.11.1' && format('mobile-template-Linux-X64-{0}-{1}-{2}-v2', steps.engine.outputs.revision, steps.engine.outputs.emsdk, hashFiles('build.sh', 'godot-explorer/web/emsdk-side-module-exports.patch')) || '' }}
       - uses: actions/setup-python@v6
-        if: steps.template.outputs.cache-hit != 'true'
+        if: steps.template.outputs.cache-matched-key == ''
         with:
           python-version: '3.13'
       - uses: ./.github/actions/setup-emsdk
-        if: steps.template.outputs.cache-hit != 'true'
+        if: steps.template.outputs.cache-matched-key == ''
       - name: Build engine
-        if: steps.template.outputs.cache-hit != 'true'
+        if: steps.template.outputs.cache-matched-key == ''
         run: |
-          python -m pip install scons==4.11.1
+          python -m pip install "scons==$SCONS_VERSION"
           ./build.sh engine
       - name: Save engine before downstream checks
         uses: actions/cache/save@v4
