@@ -145,6 +145,8 @@ Rust still rebuilds the workspace crates. Documentation-only changes skip
 compilation and packaging; manual runs and release tags always run the full
 pipeline. New commits cancel obsolete validation runs, while release runs finish.
 Cold and cached build times differ; use the separate Actions steps to measure both.
+Use `validate` as the required branch check: it accepts documentation-only runs
+and requires every build, audit and regression job for runtime changes.
 
 Workflow artifacts include the export, npm tarball and regression screenshots.
 Passing software-rendered graphics checks does not establish device performance.

@@ -246,9 +246,30 @@ jobs:
           path: dcl-regenesislabs-mobile-preview-runtime-*.tgz
           if-no-files-found: error
           retention-days: 14
+  validate:
+    if: always() && github.event.action != 'closed'
+    needs: [checks, engine, runtime, build, browser, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every applicable check
+        env:
+          CHECKS: ${{ needs.checks.result }}
+          BUILD_SCOPE: ${{ needs.checks.outputs.build }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          test "$CHECKS" = success
+          case "$BUILD_SCOPE" in true|false) ;; *) exit 1 ;; esac
+          for result in $RESULTS; do
+            if [ "$BUILD_SCOPE" = true ]; then
+              test "$result" = success
+            else
+              case "$result" in success|skipped) ;; *) exit 1 ;; esac
+            fi
+          done
   publish:
     if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: package
+    needs: [package, validate]
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 10
