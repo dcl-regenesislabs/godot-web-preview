@@ -1,0 +1,76 @@
+name: 🔗 GHA
+on: [push, pull_request, merge_group, workflow_dispatch]
+
+concurrency:
+  group: ci-${{github.actor}}-${{github.head_ref || github.run_number}}-${{github.ref}}-runner
+  cancel-in-progress: true
+
+jobs:
+  # First stage: Only static checks, fast and prevent expensive builds from running.
+
+  # static-checks:
+  #   if: ${{ !vars.DISABLE_GODOT_CI || github.run_attempt > 1 || github.event_name == 'workflow_dispatch' }}
+  #   name: 📊 Static checks
+  #   uses: ./.github/workflows/static_checks.yml
+
+  # Second stage: Run all the builds and some of the tests.
+
+  android-build:
+    name: 🤖 Android
+    #needs: static-checks
+    uses: ./.github/workflows/android_builds.yml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  ios-build:
+    name: 🍏 iOS
+    #needs: static-checks
+    uses: ./.github/workflows/ios_builds.yml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  linux-build:
+    name: 🐧 Linux
+    #needs: static-checks
+    uses: ./.github/workflows/linux_builds.yml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  macos-build:
+    name: 🍎 macOS
+    #needs: static-checks
+    uses: ./.github/workflows/macos_builds.yml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  windows-build:
+    name: 🏁 Windows
+    #needs: static-checks
+    uses: ./.github/workflows/windows_builds.yml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  process-templates:
+    name: Process templates
+    needs: [android-build, ios-build, linux-build, macos-build, windows-build]
+    uses: ./.github/workflows/process_templates.yml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}

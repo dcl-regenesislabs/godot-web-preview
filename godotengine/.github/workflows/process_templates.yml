@@ -1,0 +1,195 @@
+name: Process templates
+on:
+  workflow_call:
+    secrets:
+      R2_ACCESS_KEY_ID:
+        required: true
+      R2_SECRET_ACCESS_KEY:
+        required: true
+      R2_ENDPOINT:
+        required: true
+      R2_BUCKET:
+        required: true
+
+
+# Global Settings
+env:
+  GODOT_VERSION: 4.6.2.stable
+  GODOT_BASE_VERSION: "4.6.2"
+
+concurrency:
+  group: ci-${{github.actor}}-${{github.head_ref || github.run_number}}-${{github.ref}}-process-templates
+  cancel-in-progress: true
+
+jobs:
+  process-templates:
+    runs-on: "warp-ubuntu-2404-x64-2x"
+    name: Process Godot Templates
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Determine upload path
+        id: upload-path
+        run: |
+          BASE_VERSION="${{ env.GODOT_BASE_VERSION }}"
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          SAFE_BRANCH=$(echo "${BRANCH_NAME}" | sed 's/[^a-zA-Z0-9._-]/-/g')
+          SHORT_SHA="${GITHUB_SHA:0:9}"
+
+          if [[ "${BRANCH_NAME}" == "${BASE_VERSION}" ]]; then
+            # Immutable, SHA-tagged path matching the binary's own --version string
+            # (<ver>.stable.gh.<sha>). godot-explorer's xtask pins downloads to this exact path so a
+            # rebuild can never silently swap the artifact under a consumer.
+            UPLOAD_PATH="${BASE_VERSION}.stable.gh.${SHORT_SHA}"
+          else
+            UPLOAD_PATH="branches/${SAFE_BRANCH}"
+          fi
+
+          echo "UPLOAD_PATH=${UPLOAD_PATH}" >> $GITHUB_OUTPUT
+          echo "Upload path: ${UPLOAD_PATH}"
+
+      - name: Configure AWS CLI for R2
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws configure set region auto
+
+      - name: Download artifacts from R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          ARTIFACTS_DIR="./artifacts"
+          RUN_ID="${{ github.run_id }}"
+
+          echo "Downloading artifacts from R2 for run ${RUN_ID}..."
+          mkdir -p "${ARTIFACTS_DIR}"
+
+          # Download all artifacts for this run from R2
+          aws s3 sync "s3://${R2_BUCKET}/artifacts/${RUN_ID}/" "${ARTIFACTS_DIR}/" \
+            --endpoint-url "${R2_ENDPOINT}"
+
+          echo "✓ All artifacts downloaded successfully from R2!"
+          echo "Artifacts location: ${ARTIFACTS_DIR}/"
+
+      # - name: Download artifacts from current run
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     path: ./artifacts
+      
+        
+      - name: Debug - Show tree of the artifacts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree
+          ls -la ./artifacts/
+          tree ./artifacts/
+      - name: Prepare output folders
+        run: |
+          mkdir -p templates
+          mkdir -p editors
+          echo ${{ env.GODOT_VERSION }} > templates/version.txt
+      - name: Download MoltenVK
+        run: |
+          echo "Missing MoltenVK for macOS, downloading it."
+          mkdir -p deps/moltenvk
+          pushd deps/moltenvk
+          curl -L -o moltenvk.tar https://github.com/godotengine/moltenvk-osxcross/releases/download/vulkan-sdk-1.3.283.0-2/MoltenVK-all.tar
+          tar xf moltenvk.tar && rm -f moltenvk.tar
+          mv MoltenVK/MoltenVK/include/ MoltenVK/
+          mv MoltenVK/MoltenVK/static/MoltenVK.xcframework/ MoltenVK/
+          popd
+      - name: Prepare iOS Files
+        run: |
+          cp -r misc/dist/apple_embedded_xcode ios_xcode
+          cp ./artifacts/ios-template-debug/libgodot.ios.template_debug.arm64.a ios_xcode/libgodot.ios.debug.xcframework/ios-arm64/libgodot.a
+          cp ./artifacts/ios-template-release/libgodot.ios.template_release.arm64.a ios_xcode/libgodot.ios.release.xcframework/ios-arm64/libgodot.a
+          cp ./artifacts/ios-template-debug-simulator/libgodot.ios.template_debug.arm64.simulator.a ios_xcode/libgodot.ios.debug.xcframework/ios-arm64_x86_64-simulator/libgodot.a
+          cp ./artifacts/ios-template-release-simulator/libgodot.ios.template_release.arm64.simulator.a ios_xcode/libgodot.ios.release.xcframework/ios-arm64_x86_64-simulator/libgodot.a
+          cp -r deps/moltenvk/MoltenVK/MoltenVK.xcframework ios_xcode/
+          # TODO: Add FFMPEG libs?
+          cd ios_xcode
+          zip -q -9 -r ../templates/ios.zip .
+
+      - name: Copy and compress Linux and Windows Editor
+        run: |
+          cd artifacts/
+          GODOT_LINUX_PATH=godot.${{ env.GODOT_VERSION }}.linux.editor.x86_64
+          GODOT_WINDOWS_PATH=godot.${{ env.GODOT_VERSION }}.windows.editor.x86_64.exe
+          mv linux-editor/linux_editor.x86_64 ${GODOT_LINUX_PATH}
+          mv windows-editor/windows_editor_x86_64.exe ${GODOT_WINDOWS_PATH}
+          zip -q -9 -r ../editors/${GODOT_LINUX_PATH}.zip ${GODOT_LINUX_PATH}
+          zip -q -9 -r ../editors/${GODOT_WINDOWS_PATH}.zip ${GODOT_WINDOWS_PATH}
+
+      - name: Prepare Editor MacOS Files
+        run: |
+          cp -r misc/dist/macos_tools.app Godot.app
+          mkdir -p Godot.app/Contents/MacOS
+          cp artifacts/macos-editor/godot.macos.editor.universal Godot.app/Contents/MacOS/Godot
+          chmod +x Godot.app/Contents/MacOS/Godot
+          zip -q -9 -r "editors/godot.${{ env.GODOT_VERSION }}.macos.editor.arm64.zip" Godot.app
+
+      - name: Prepare Templates MacOS Files
+        run: |
+          cp -r misc/dist/macos_template.app .
+          mkdir -p macos_template.app/Contents/MacOS
+          cp artifacts/macos-template-release/godot.macos.template_release.universal macos_template.app/Contents/MacOS/godot_macos_release.universal
+          cp artifacts/macos-template-debug/godot.macos.template_debug.universal macos_template.app/Contents/MacOS/godot_macos_debug.universal
+
+          chmod +x macos_template.app/Contents/MacOS/godot_macos*
+          zip -q -9 -r templates/macos.zip macos_template.app
+
+      - name: Copy templates
+        run: |
+          mv artifacts/android-template/android_debug.apk templates/
+          mv artifacts/android-template/android_release.apk templates/
+          mv artifacts/android-template/android_source.zip templates/
+          mv artifacts/linux-template-debug/linux_debug.x86_64 templates/
+          mv artifacts/linux-template-release/linux_release.x86_64 templates/
+          mv artifacts/windows-template-debug/windows_debug_x86_64.exe templates/
+          mv artifacts/windows-template-release/windows_release_x86_64.exe templates/
+
+      - name: Compress individual files
+        run: |
+          mkdir -p compressed-templates/
+          cd templates/
+          # Loop through each file in the folder
+          for file in *; do
+              # Check if it's a regular file (not a directory)
+              if [[ -f "$file" ]]; then
+                  # Create a ZIP archive for each file
+                  zip "../compressed-templates/${file}.zip" "$file"
+              fi
+          done
+
+
+      - name: Upload editors to R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          UPLOAD_PATH: ${{ steps.upload-path.outputs.UPLOAD_PATH }}
+        run: |
+          aws s3 cp editors/ "s3://${R2_BUCKET}/${UPLOAD_PATH}/editors/" --recursive --endpoint-url "${R2_ENDPOINT}"
+          echo "✓ Uploaded editors to: ${UPLOAD_PATH}/editors/"
+
+      - name: Upload compressed templates to R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          UPLOAD_PATH: ${{ steps.upload-path.outputs.UPLOAD_PATH }}
+        run: |
+          aws s3 cp compressed-templates/ "s3://${R2_BUCKET}/${UPLOAD_PATH}/compressed-templates/" --recursive --endpoint-url "${R2_ENDPOINT}"
+          echo "✓ Uploaded compressed templates to: ${UPLOAD_PATH}/compressed-templates/"
+
+      - name: Cleanup temporary artifacts from R2
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          RUN_ID="${{ github.run_id }}"
+          echo "Cleaning up temporary artifacts for run ${RUN_ID}..."
+          aws s3 rm "s3://${R2_BUCKET}/artifacts/${RUN_ID}/" --recursive --endpoint-url "${R2_ENDPOINT}"
+          echo "✓ Cleaned up artifacts/${RUN_ID}/"
