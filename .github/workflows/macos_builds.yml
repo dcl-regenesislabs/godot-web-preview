@@ -1,0 +1,142 @@
+name: 🍎 macOS Builds
+on:
+  workflow_call:
+    secrets:
+      R2_ACCESS_KEY_ID:
+        required: true
+      R2_SECRET_ACCESS_KEY:
+        required: true
+      R2_ENDPOINT:
+        required: true
+      R2_BUCKET:
+        required: true
+
+# Global Settings
+env:
+  SCONS_FLAGS: >-
+    dev_mode=yes
+    module_text_server_fb_enabled=yes
+    "accesskit_sdk_path=${{ github.workspace }}/accesskit-c-0.21.2/"
+
+concurrency:
+  group: ci-${{github.actor}}-${{github.head_ref || github.run_number}}-${{github.ref}}-macos
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    runs-on: "macos-latest"
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Editor (target=editor)
+            cache-name: macos-editor
+            target: editor
+            tests: true
+            scons-flags: production=yes
+            bin: "./bin/godot.macos.editor.universal"
+
+          - name: Template (target=template_release)
+            cache-name: macos-template-release
+            target: template_release
+            tests: true
+            scons-flags: production=yes
+            bin: "./bin/godot.macos.template_release.universal"
+
+          - name: Template (target=template_debug)
+            cache-name: macos-template-debug
+            target: template_debug
+            tests: true
+            scons-flags: production=yes
+            bin: "./bin/godot.macos.template_debug.universal"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode 16
+        run: |
+          # macos-latest no longer reliably ships Xcode_16.2.app (the image rolls forward).
+          # Pick the newest installed Xcode 16.x, falling back to the newest Xcode available.
+          XCODE="$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)"
+          [ -z "$XCODE" ] && XCODE="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          echo "Selecting $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Restore Godot build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: ${{ matrix.cache-name }}
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Download pre-built AccessKit
+        uses: dsaltares/fetch-gh-release-asset@1.1.2
+        with:
+          repo: godotengine/godot-accesskit-c-static
+          version: tags/0.21.2
+          file: accesskit-c-0.21.2.zip
+          target: accesskit-c-0.21.2/accesskit_c.zip
+
+      - name: Extract pre-built AccessKit
+        run: unzip -o accesskit-c-0.21.2/accesskit_c.zip
+
+      - name: Setup Vulkan SDK
+        id: vulkan-sdk
+        run: |
+          if sh misc/scripts/install_vulkan_sdk_macos.sh; then
+            echo "VULKAN_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::macOS: Vulkan SDK installation failed, building without Vulkan support."
+            echo "VULKAN_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+        continue-on-error: true
+
+      - name: Compilation (x86_64)
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }} arch=x86_64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }}
+          platform: macos
+          target: ${{ matrix.target }}
+
+      - name: Compilation (arm64)
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }} arch=arm64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }}
+          platform: macos
+          target: ${{ matrix.target }}
+
+      - name: Save Godot build cache
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: ${{ matrix.cache-name }}
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: |
+          lipo -create ./bin/godot.macos.${{ matrix.target }}.x86_64 ./bin/godot.macos.${{ matrix.target }}.arm64 -output ./bin/godot.macos.${{ matrix.target }}.universal
+          rm ./bin/godot.macos.${{ matrix.target }}.x86_64 ./bin/godot.macos.${{ matrix.target }}.arm64
+          strip bin/godot.*
+          chmod +x bin/godot.*
+
+      - name: Upload artifact to R2
+        uses: ./.github/actions/upload-r2
+        with:
+          name: ${{ matrix.cache-name }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          run-id: ${{ github.run_id }}
+
+      - name: Unit tests
+        if: ${{ matrix.tests }}
+        run: |
+          ${{ matrix.bin }} --version
+          ${{ matrix.bin }} --help
+          ${{ matrix.bin }} --test --force-colors

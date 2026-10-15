@@ -1,0 +1,130 @@
+name: 🏁 Windows Builds
+on:
+  workflow_call:
+    secrets:
+      R2_ACCESS_KEY_ID:
+        required: true
+      R2_SECRET_ACCESS_KEY:
+        required: true
+      R2_ENDPOINT:
+        required: true
+      R2_BUCKET:
+        required: true
+
+# Global Settings
+env:
+  SCONS_FLAGS: >-
+    dev_mode=yes
+    module_text_server_fb_enabled=yes
+    debug_symbols=no
+    d3d12=yes
+    "angle_libs=${{ github.workspace }}/"
+    "accesskit_sdk_path=${{ github.workspace }}/accesskit-c-0.21.2/"
+  SCONS_CACHE_MSVC_CONFIG: true
+  PYTHONIOENCODING: utf8
+
+concurrency:
+  group: ci-${{github.actor}}-${{github.head_ref || github.run_number}}-${{github.ref}}-windows
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    # Windows 10 with latest image
+    runs-on: "windows-latest"
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Editor (target=editor)
+            cache-name: windows-editor
+            target: editor
+            scons-flags: production=yes debug_symbols=no
+            bin: "./bin/godot.windows.editor.x86_64"
+            binMoved: "./bin/windows_editor_x86_64"
+
+          - name: Template (target=template_release)
+            cache-name: windows-template-release
+            target: template_release
+            scons-flags: production=yes debug_symbols=no
+            bin: "./bin/godot.windows.template_release.x86_64"
+            binMoved: "./bin/windows_release_x86_64"
+
+          - name: Template (target=template_debug)
+            cache-name: windows-template-debug
+            target: template_debug
+            scons-flags: production=yes debug_symbols=no
+            bin: "./bin/godot.windows.template_debug.x86_64"
+            binMoved: "./bin/windows_debug_x86_64"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore Godot build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: ${{ matrix.cache-name }}
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Download Direct3D 12 SDK components
+        run: python ./misc/scripts/install_d3d12_sdk_windows.py
+
+      - name: Download pre-built ANGLE static libraries
+        uses: dsaltares/fetch-gh-release-asset@1.1.2
+        with:
+          repo: godotengine/godot-angle-static
+          version: tags/chromium/6029
+          file: Windows.6029-1.MSVC_17.x86_64.x86_32.zip
+          target: angle/angle.zip
+
+      - name: Extract pre-built ANGLE static libraries
+        run: Expand-Archive -Force angle/angle.zip ${{github.workspace}}/
+
+      - name: Setup MSVC problem matcher
+        uses: ammaraskar/msvc-problem-matcher@541aa4360062d76d9620af6b8bd35cfa0c5ef19f # @master
+
+      - name: Download pre-built AccessKit
+        uses: dsaltares/fetch-gh-release-asset@1.1.2
+        with:
+          repo: godotengine/godot-accesskit-c-static
+          version: tags/0.21.2
+          file: accesskit-c-0.21.2.zip
+          target: accesskit-c-0.21.2/accesskit_c.zip
+
+      - name: Extract pre-built AccessKit
+        run: unzip -o accesskit-c-0.21.2/accesskit_c.zip
+
+      - name: Compilation
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }}
+          platform: windows
+          target: ${{ matrix.target }}
+
+      - name: Save Godot build cache
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: ${{ matrix.cache-name }}
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: |
+          Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
+          Move-Item -Path "${{ matrix.bin }}.console.exe" -Destination "${{ matrix.binMoved }}_console.exe"
+          Move-Item -Path "${{ matrix.bin }}.exe" -Destination "${{ matrix.binMoved }}.exe"
+
+
+      - name: Upload artifact to R2
+        uses: ./.github/actions/upload-r2
+        with:
+          name: ${{ matrix.cache-name }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          run-id: ${{ github.run_id }}

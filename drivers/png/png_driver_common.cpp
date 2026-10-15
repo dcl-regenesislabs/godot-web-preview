@@ -1,0 +1,336 @@
+/**************************************************************************/
+/*  png_driver_common.cpp                                                 */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#include "png_driver_common.h"
+
+#include "core/config/engine.h"
+
+#include <png.h>
+
+namespace PNGDriverCommon {
+
+struct PNGReadContext {
+	const uint8_t *data;
+	size_t size;
+	size_t offset;
+};
+
+static void png_read_from_mem(png_structp png_ptr, png_bytep out_data, png_size_t length) {
+	PNGReadContext *ctx = (PNGReadContext *)png_get_io_ptr(png_ptr);
+	if (ctx->offset + length > ctx->size) {
+		png_error(png_ptr, "Read past end of PNG data");
+		return;
+	}
+	memcpy(out_data, ctx->data + ctx->offset, length);
+	ctx->offset += length;
+}
+
+// Print any warnings.
+// On error, set explain and return true.
+// Call should be wrapped in ERR_FAIL_COND
+static bool check_error(const png_image &image) {
+	const png_uint_32 failed = PNG_IMAGE_FAILED(image);
+	if (failed & PNG_IMAGE_ERROR) {
+		return true;
+	} else if (failed) {
+#ifdef TOOLS_ENABLED
+		// suppress this warning, to avoid log spam when opening assetlib
+		const static char *const noisy = "iCCP: known incorrect sRGB profile";
+		const Engine *const eng = Engine::get_singleton();
+		if (eng && eng->is_editor_hint() && !strcmp(image.message, noisy)) {
+			return false;
+		}
+#endif
+		WARN_PRINT(image.message);
+	}
+	return false;
+}
+
+// Internal structure for passing image info from low-level PNG reading.
+struct PNGImageInfo {
+	png_uint_32 width;
+	png_uint_32 height;
+	png_byte color_type;
+	int channels;
+};
+
+// Low-level PNG read function that uses setjmp for error handling.
+// MSVC warning C4611 is disabled here because this function only uses POD types,
+// so there are no C++ destructors that could be affected by longjmp.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4611)
+#endif
+static Error png_read_image_no_gamma(const uint8_t *p_source, size_t p_size, PNGImageInfo &r_info, uint8_t *p_buffer) {
+	png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+	ERR_FAIL_NULL_V(png_ptr, ERR_OUT_OF_MEMORY);
+
+	png_infop info_ptr = png_create_info_struct(png_ptr);
+	if (!info_ptr) {
+		png_destroy_read_struct(&png_ptr, nullptr, nullptr);
+		ERR_FAIL_V(ERR_OUT_OF_MEMORY);
+	}
+
+	if (setjmp(png_jmpbuf(png_ptr))) {
+		png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+		ERR_FAIL_V(ERR_FILE_CORRUPT);
+	}
+
+	PNGReadContext ctx = { p_source, p_size, 0 };
+	png_set_read_fn(png_ptr, &ctx, png_read_from_mem);
+	png_read_info(png_ptr, info_ptr);
+
+	png_uint_32 width = png_get_image_width(png_ptr, info_ptr);
+	png_uint_32 height = png_get_image_height(png_ptr, info_ptr);
+	png_byte color_type = png_get_color_type(png_ptr, info_ptr);
+	png_byte bit_depth = png_get_bit_depth(png_ptr, info_ptr);
+
+	if (bit_depth == 16) {
+		png_set_strip_16(png_ptr);
+	}
+	if (color_type == PNG_COLOR_TYPE_PALETTE) {
+		png_set_palette_to_rgb(png_ptr);
+	}
+	if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) {
+		png_set_expand_gray_1_2_4_to_8(png_ptr);
+	}
+	if (png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS)) {
+		png_set_tRNS_to_alpha(png_ptr);
+	}
+
+	png_read_update_info(png_ptr, info_ptr);
+
+	color_type = png_get_color_type(png_ptr, info_ptr);
+	int channels = png_get_channels(png_ptr, info_ptr);
+
+	r_info.width = width;
+	r_info.height = height;
+	r_info.color_type = color_type;
+	r_info.channels = channels;
+
+	if (p_buffer) {
+		png_bytep *row_pointers = (png_bytep *)memalloc(height * sizeof(png_bytep));
+		for (png_uint_32 y = 0; y < height; y++) {
+			row_pointers[y] = p_buffer + y * width * channels;
+		}
+		png_read_image(png_ptr, row_pointers);
+		memfree(row_pointers);
+	}
+
+	png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+	return OK;
+}
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
+Error png_to_image(const uint8_t *p_source, size_t p_size, bool p_force_linear, Ref<Image> p_image, bool p_ignore_gamma) {
+	if (p_ignore_gamma) {
+		// Use low-level libpng API to load without gamma correction.
+		// First pass: get image info.
+		PNGImageInfo info;
+		Error err = png_read_image_no_gamma(p_source, p_size, info, nullptr);
+		ERR_FAIL_COND_V(err != OK, err);
+
+		Image::Format dest_format;
+		switch (info.color_type) {
+			case PNG_COLOR_TYPE_GRAY:
+				dest_format = Image::FORMAT_L8;
+				break;
+			case PNG_COLOR_TYPE_GRAY_ALPHA:
+				dest_format = Image::FORMAT_LA8;
+				break;
+			case PNG_COLOR_TYPE_RGB:
+				dest_format = Image::FORMAT_RGB8;
+				break;
+			case PNG_COLOR_TYPE_RGBA:
+				dest_format = Image::FORMAT_RGBA8;
+				break;
+			default:
+				ERR_FAIL_V_MSG(ERR_UNAVAILABLE, "Unsupported PNG color type.");
+		}
+
+		Vector<uint8_t> buffer;
+		err = buffer.resize(info.width * info.height * info.channels);
+		ERR_FAIL_COND_V(err != OK, err);
+
+		// Second pass: read actual image data.
+		err = png_read_image_no_gamma(p_source, p_size, info, buffer.ptrw());
+		ERR_FAIL_COND_V(err != OK, err);
+
+		p_image->set_data(info.width, info.height, false, dest_format, buffer);
+		return OK;
+	}
+
+	png_image png_img;
+	memset(&png_img, 0, sizeof(png_img));
+	png_img.version = PNG_IMAGE_VERSION;
+
+	// fetch image properties
+	int success = png_image_begin_read_from_memory(&png_img, p_source, p_size);
+	ERR_FAIL_COND_V_MSG(check_error(png_img), ERR_FILE_CORRUPT, png_img.message);
+	ERR_FAIL_COND_V(!success, ERR_FILE_CORRUPT);
+
+	// flags to be masked out of input format to give target format
+	const png_uint_32 format_mask = ~(
+			// convert component order to RGBA
+			PNG_FORMAT_FLAG_BGR | PNG_FORMAT_FLAG_AFIRST
+			// convert 16 bit components to 8 bit
+			| PNG_FORMAT_FLAG_LINEAR
+			// convert indexed image to direct color
+			| PNG_FORMAT_FLAG_COLORMAP);
+
+	png_img.format &= format_mask;
+
+	Image::Format dest_format;
+	switch (png_img.format) {
+		case PNG_FORMAT_GRAY:
+			dest_format = Image::FORMAT_L8;
+			break;
+		case PNG_FORMAT_GA:
+			dest_format = Image::FORMAT_LA8;
+			break;
+		case PNG_FORMAT_RGB:
+			dest_format = Image::FORMAT_RGB8;
+			break;
+		case PNG_FORMAT_RGBA:
+			dest_format = Image::FORMAT_RGBA8;
+			break;
+		default:
+			png_image_free(&png_img); // only required when we return before finish_read
+			ERR_PRINT("Unsupported png format.");
+			return ERR_UNAVAILABLE;
+	}
+
+	if (!p_force_linear) {
+		// assume 16 bit pngs without sRGB or gAMA chunks are in sRGB format
+		png_img.flags |= PNG_IMAGE_FLAG_16BIT_sRGB;
+	}
+
+	const png_uint_32 stride = PNG_IMAGE_ROW_STRIDE(png_img);
+	Vector<uint8_t> buffer;
+	Error err = buffer.resize(PNG_IMAGE_BUFFER_SIZE(png_img, stride));
+	if (err) {
+		png_image_free(&png_img); // only required when we return before finish_read
+		return err;
+	}
+	uint8_t *writer = buffer.ptrw();
+
+	// read image data to buffer and release libpng resources
+	success = png_image_finish_read(&png_img, nullptr, writer, stride, nullptr);
+	ERR_FAIL_COND_V_MSG(check_error(png_img), ERR_FILE_CORRUPT, png_img.message);
+	ERR_FAIL_COND_V(!success, ERR_FILE_CORRUPT);
+
+	//print_line("png width: "+itos(png_img.width)+" height: "+itos(png_img.height));
+	p_image->set_data(png_img.width, png_img.height, false, dest_format, buffer);
+
+	return OK;
+}
+
+Error image_to_png(const Ref<Image> &p_image, Vector<uint8_t> &p_buffer) {
+	Ref<Image> source_image = p_image->duplicate();
+
+	if (source_image->is_compressed()) {
+		source_image->decompress();
+	}
+
+	ERR_FAIL_COND_V(source_image->is_compressed(), FAILED);
+
+	png_image png_img;
+	memset(&png_img, 0, sizeof(png_img));
+	png_img.version = PNG_IMAGE_VERSION;
+	png_img.width = source_image->get_width();
+	png_img.height = source_image->get_height();
+
+	switch (source_image->get_format()) {
+		case Image::FORMAT_L8:
+			png_img.format = PNG_FORMAT_GRAY;
+			break;
+		case Image::FORMAT_LA8:
+			png_img.format = PNG_FORMAT_GA;
+			break;
+		case Image::FORMAT_RGB8:
+			png_img.format = PNG_FORMAT_RGB;
+			break;
+		case Image::FORMAT_RGBA8:
+			png_img.format = PNG_FORMAT_RGBA;
+			break;
+		default:
+			if (source_image->detect_alpha() != Image::ALPHA_NONE) {
+				source_image->convert(Image::FORMAT_RGBA8);
+				png_img.format = PNG_FORMAT_RGBA;
+			} else {
+				source_image->convert(Image::FORMAT_RGB8);
+				png_img.format = PNG_FORMAT_RGB;
+			}
+	}
+
+	const Vector<uint8_t> image_data = source_image->get_data();
+	const uint8_t *reader = image_data.ptr();
+
+	// we may be passed a buffer with existing content we're expected to append to
+	const int buffer_offset = p_buffer.size();
+
+	const size_t png_size_estimate = PNG_IMAGE_PNG_SIZE_MAX(png_img);
+
+	// try with estimated size
+	size_t compressed_size = png_size_estimate;
+	int success = 0;
+	{ // scope writer lifetime
+		Error err = p_buffer.resize(buffer_offset + png_size_estimate);
+		ERR_FAIL_COND_V(err, err);
+
+		uint8_t *writer = p_buffer.ptrw();
+		success = png_image_write_to_memory(&png_img, &writer[buffer_offset],
+				&compressed_size, 0, reader, 0, nullptr);
+		ERR_FAIL_COND_V_MSG(check_error(png_img), FAILED, png_img.message);
+	}
+	if (!success) {
+		// buffer was big enough, must be some other error
+		ERR_FAIL_COND_V(compressed_size <= png_size_estimate, FAILED);
+
+		// write failed due to buffer size, resize and retry
+		Error err = p_buffer.resize(buffer_offset + compressed_size);
+		ERR_FAIL_COND_V(err, err);
+
+		uint8_t *writer = p_buffer.ptrw();
+		success = png_image_write_to_memory(&png_img, &writer[buffer_offset],
+				&compressed_size, 0, reader, 0, nullptr);
+		ERR_FAIL_COND_V_MSG(check_error(png_img), FAILED, png_img.message);
+		ERR_FAIL_COND_V(!success, FAILED);
+	}
+
+	// trim buffer size to content
+	Error err = p_buffer.resize(buffer_offset + compressed_size);
+	ERR_FAIL_COND_V(err, err);
+
+	return OK;
+}
+} // namespace PNGDriverCommon

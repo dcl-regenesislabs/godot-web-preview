@@ -1,0 +1,88 @@
+name: 🍏 iOS Builds
+on:
+  workflow_call:
+    secrets:
+      R2_ACCESS_KEY_ID:
+        required: true
+      R2_SECRET_ACCESS_KEY:
+        required: true
+      R2_ENDPOINT:
+        required: true
+      R2_BUCKET:
+        required: true
+
+# Global Settings
+env:
+ # TODO: SCONS_FLAGS from 4.5 diff
+  # SCONS_FLAGS: >-
+  #   dev_mode=yes
+  #   module_text_server_fb_enabled=yes
+  #   tests=no
+  #   debug_symbols=no
+  GODOT_BASE_BRANCH: 4.6
+  SCONS_FLAGS: verbose=yes warnings=no production=yes debug_symbols=yes
+
+concurrency:
+  group: ci-${{ github.actor }}-${{ github.head_ref || github.run_number }}-${{ github.ref }}-ios
+  cancel-in-progress: true
+
+jobs:
+  ios-template:
+    runs-on: "macos-latest"
+    strategy:
+      matrix:
+        include:
+          - target: template_release
+            ios_simulator: no
+            arch: arm64
+            cache-name: ios-template-release
+          - target: template_debug
+            ios_simulator: no
+            arch: arm64
+            cache-name: ios-template-debug
+          - target: template_release
+            ios_simulator: yes
+            arch: arm64
+            cache-name: ios-template-release-simulator
+          - target: template_debug
+            ios_simulator: yes
+            arch: arm64
+            cache-name: ios-template-debug-simulator
+    name: Template (target=${{ matrix.target }}, ios_simulator=${{ matrix.ios_simulator }}, arch=${{ matrix.arch }})
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Godot build cache restore
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: ${{ matrix.cache-name }}
+        continue-on-error: true
+
+      - name: Setup python and scons
+        uses: ./.github/actions/godot-deps
+
+      - name: Compilation (${{matrix.arch}})
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} ios_simulator=${{ matrix.ios_simulator }} arch=${{ matrix.arch }}
+          platform: ios
+          target: ${{ matrix.target }}
+
+      - name: Setup Godot build cache restore
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: ${{ matrix.cache-name }}
+        continue-on-error: true
+
+      - name: Upload artifact to R2
+        uses: ./.github/actions/upload-r2
+        with:
+          name: ${{ matrix.cache-name }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          run-id: ${{ github.run_id }}
