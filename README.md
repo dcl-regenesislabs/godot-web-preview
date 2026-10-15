@@ -21,8 +21,8 @@ as a guest.
 
 ### What you need
 
-- **Access** to this repository. Engine and explorer sources are included as Git
-  subtrees; no access to separate private source repositories is needed.
+- **A clone** of this public repository. Engine and explorer sources are included
+  as Git subtrees; no access to separate private source repositories is needed.
 - **A Mac** (tested on Apple Silicon). Linux will probably work but is untested; Windows isn't supported.
 - **These tools:**
   - Xcode Command Line Tools: `xcode-select --install`

@@ -30,8 +30,8 @@ a GitHub-hosted runner. PRs, main pushes and manual validation runs never publis
 Configure npm trusted publishing for GitHub owner `dcl-regenesislabs`, repository
 `godot-web-preview`, workflow `preview.yml`, environment `production`, with direct
 `npm publish` allowed. The publish job uses `id-token: write`; no npm token is
-stored. Provenance is disabled to support a private source repository; enable it
-if this repository is published publicly. See [npm's trusted publishing guide](https://docs.npmjs.com/trusted-publishers/).
+stored. Releases include npm provenance linking each package to this public source
+repository and its build. See [npm's trusted publishing guide](https://docs.npmjs.com/trusted-publishers/).
 
 For the first release, a maintainer must bootstrap the package name and register
 the trusted publisher before tagging the first OIDC release. The package is not
