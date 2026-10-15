@@ -134,6 +134,7 @@ jobs:
           tar -czf "$RUNNER_TEMP/runtime-inputs.tar.gz" \
             godot-explorer/.bin/godot/godot4_bin \
             godot-explorer/godot/addons/sentry/bin/macos \
+            godot-explorer/godot/addons/sentry/bin/web \
             godot-explorer/lib/target/libdclgodot_macos/libdclgodot.dylib \
             godot-explorer/lib/target/wasm32-unknown-emscripten/release/dclgodot.wasm
       - uses: actions/upload-artifact@v4
