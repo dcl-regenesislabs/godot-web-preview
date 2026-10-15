@@ -1,0 +1,36 @@
+[gd_scene format=3 uid="uid://cf8j7k2x3p4hl"]
+
+[ext_resource type="Animation" path="res://assets/environment/directional_light_cycle.tres" id="1_anim"]
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_local"]
+_data = {
+&"light_cycle": ExtResource("1_anim")
+}
+
+[node name="SkyLights" type="Node3D" unique_id=697501473]
+
+[node name="MainLight" type="DirectionalLight3D" parent="." unique_id=876333680]
+light_color = Color(1, 0.988235, 0.768627, 1)
+light_energy = 0.7
+light_bake_mode = 0
+shadow_enabled = true
+shadow_opacity = 0.7
+directional_shadow_mode = 1
+directional_shadow_split_1 = 0.3
+directional_shadow_max_distance = 30.0
+
+[node name="MoonLight" type="DirectionalLight3D" parent="." unique_id=554022131]
+visible = false
+light_color = Color(0.55, 0.65, 0.95, 1)
+light_energy = 0.0
+light_bake_mode = 0
+shadow_enabled = false
+shadow_opacity = 0.7
+directional_shadow_mode = 1
+directional_shadow_split_1 = 0.3
+directional_shadow_max_distance = 30.0
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="." unique_id=1628949876]
+libraries = {
+"": SubResource("AnimationLibrary_local")
+}

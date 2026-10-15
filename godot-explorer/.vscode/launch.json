@@ -1,0 +1,151 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "(Windows) Launch",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": [
+        "--path",
+        "${workspaceFolder}/godot",
+        "--skip-lobby",
+        "--realm",
+        "http://localhost:8000",
+        "--preview"
+      ],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}/godot",
+      "environment": [
+        {
+          "name": "RUST_LOG",
+          "value": "dclgodot=info"
+        }
+      ],
+      "externalConsole": true,
+      "preLaunchTask": "Build GDExtension Lib",
+      "sourceFileMap": {
+        "/rustc/129f3b9964af4d4a709d1383930ade12dfe7c081": "${env:HOME}${env:USERPROFILE}\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\lib\\rustlib\\src\\rust"
+      }
+    },
+    {
+      "name": "(Windows) Run Test",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": ["--path", "${workspaceFolder}/godot", "--test-runner"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}/godot",
+      "environment": [
+        {
+          "name": "RUST_LOG",
+          "value": "debug"
+        }
+      ],
+      "externalConsole": true,
+      "preLaunchTask": "Build GDExtension Lib"
+    },
+    {
+      "name": "(Windows) Launch Editor",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": ["--path", "${workspaceFolder}/godot", "-e"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}/godot",
+      "environment": [],
+      "externalConsole": true,
+      "preLaunchTask": "Build GDExtension Lib"
+    },
+    {
+      "name": "(Linux) Launch Editor",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": ["--path", "${workspaceFolder}/godot", "-e"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}/godot",
+      "environment": [],
+      "externalConsole": true,
+      "preLaunchTask": "Build GDExtension Lib"
+    },
+    {
+      "name": "(Linux) Launch",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": ["--path", "${workspaceFolder}/godot"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}/godot",
+      "environment": [
+        {
+          "name": "RUST_LOG",
+          "value": "debug"
+        }
+      ],
+      "externalConsole": true,
+      "preLaunchTask": "Build GDExtension Lib",
+      "sourceFileMap": {
+        "${workspaceFolder}": {
+          "editorPath": "${workspaceFolder}",
+          "useForBreakpoints": "true"
+        }
+      },
+      "logging": {
+        "engineLogging": true
+      }
+    },
+    {
+      "name": "(Linux) Run Test",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": ["--path", "${workspaceFolder}/godot", "--test-runner"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}/godot",
+      "environment": [],
+      "externalConsole": true,
+      "preLaunchTask": "Build GDExtension Lib",
+      "sourceFileMap": {
+        "${workspaceFolder}": {
+          "editorPath": "${workspaceFolder}",
+          "useForBreakpoints": "true"
+        }
+      },
+      "logging": {
+        "engineLogging": true
+      }
+    },
+    {
+      "name": "(MacOS) Launch Editor",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": ["--path", "${workspaceFolder}/godot", "-e"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceRoot}/godot",
+      "environment": [],
+      "externalConsole": true,
+      "preLaunchTask": "Build GDExtension Lib"
+    },
+    {
+      "name": "(MacOS) Launch",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/.bin/godot/godot4_bin",
+      "args": [
+        "--path",
+        "${workspaceFolder}/godot",
+        "--fake-deeplink",
+        "decentraland://open?realm=https://sdk-team-cdn.decentraland.org/ipfs/goerli-plaza-main-latest&position=72,-10&dynamic-scene-loading=true",
+        "--debug-panel"
+      ],
+      "cwd": "${workspaceRoot}/godot",
+      "env": {
+        "RUST_LOG": "dclgodot=debug,dclgodot::comms=error,dclgodot::analytics=error"
+      },
+      "preLaunchTask": "Build GDExtension Lib",
+      "terminal": "integrated"
+    }
+  ]
+}

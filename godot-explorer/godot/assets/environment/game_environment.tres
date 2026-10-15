@@ -1,0 +1,26 @@
+[gd_resource type="Environment" format=3 uid="uid://b0er3qu7hwmqs"]
+
+[ext_resource type="Sky" uid="uid://l82r2nfrgcbx" path="res://assets/sky.tres" id="1_mk51q"]
+
+[resource]
+background_mode = 2
+sky = ExtResource("1_mk51q")
+ambient_light_source = 2
+ambient_light_color = Color(0.98744863, 0.5753482, 0.76988745, 1)
+ambient_light_sky_contribution = 0.15
+ambient_light_energy = 0.5
+reflected_light_source = 2
+tonemap_mode = 3
+glow_enabled = true
+glow_levels/1 = 2.5
+glow_levels/2 = 1.0
+glow_normalized = true
+glow_intensity = 1.25
+glow_strength = 1.25
+fog_enabled = true
+fog_mode = 1
+fog_light_color = Color(0.245887, 0.52169, 1, 1)
+fog_density = 1.0
+fog_sky_affect = 0.0
+fog_depth_curve = 5.0
+fog_depth_begin = 76.0

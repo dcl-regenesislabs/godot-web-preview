@@ -1,0 +1,1066 @@
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc,
+};
+
+use ethers_core::types::H160;
+use futures_util::StreamExt;
+use http::Uri;
+use livekit::{id::ParticipantIdentity, DataPacket, RoomOptions};
+
+#[cfg(feature = "use_voice_chat")]
+use livekit::{
+    options::TrackPublishOptions,
+    track::{LocalAudioTrack, LocalTrack, TrackSource},
+    webrtc::{
+        audio_source::native::NativeAudioSource,
+        prelude::{AudioSourceOptions, RtcAudioSource},
+    },
+};
+use prost::Message;
+
+use crate::{
+    auth::wallet::AsH160,
+    comms::profile::UserProfile,
+    dcl::{components::proto_components::kernel::comms::rfc4, scene_apis::NetworkMessageRecipient},
+    godot_classes::dcl_global::DclGlobal,
+};
+
+use super::{
+    adapter_trait::Adapter,
+    message_processor::{
+        IncomingMessage, MessageType, Rfc4Message, StreamerAudioFrameData, StreamerAudioInitData,
+        VideoFrameData, VideoInitData, VideoTrackSourceKind, VoiceFrameData, VoiceInitData,
+    },
+};
+
+// Constants
+const CHANNEL_SIZE: usize = 1000;
+
+/// True when a LiveKit participant identity belongs to a media streamer rather
+/// than a regular player. Streamer identities come in three shapes
+/// (see decentraland/comms-gatekeeper `src/logic/cast/cast.ts`):
+/// - `{identity}-streamer` — legacy RTMP ingress participants
+/// - `stream:{placeId}:{uuid}` — DCL Cast v2 browser streamers
+/// - `presentation-bot:{...}` — presentation bots (slides / video playback)
+fn is_streamer_identity(identity: &str) -> bool {
+    identity.ends_with("-streamer")
+        || identity.starts_with("stream:")
+        || identity.starts_with("presentation-bot:")
+}
+
+/// Split a `livekit:`-style connection string into the websocket address and the
+/// access token. The authority (host AND port) is preserved — production URLs
+/// carry no explicit port, but local/self-hosted servers do.
+fn parse_conn_string(remote_address: &str) -> Option<(String, String)> {
+    let url = Uri::try_from(remote_address).ok()?;
+    let address = format!(
+        "{}://{}{}",
+        url.scheme_str().unwrap_or_default(),
+        url.authority().map(|a| a.as_str()).unwrap_or_default(),
+        url.path()
+    );
+    let token = url
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|par| par.split_once('='))
+        .find(|(key, _)| *key == "access_token")
+        .map(|(_, value)| value.to_owned())
+        .unwrap_or_default();
+    Some((address, token))
+}
+
+// Connection state values shared with the background livekit thread
+const LK_STATE_CONNECTING: u8 = 0;
+const LK_STATE_CONNECTED: u8 = 1;
+const LK_STATE_RECONNECTING: u8 = 2;
+const LK_STATE_DISCONNECTED: u8 = 3;
+
+pub struct NetworkMessage {
+    pub data: Vec<u8>,
+    pub unreliable: bool,
+    pub recipient: NetworkMessageRecipient,
+}
+
+pub struct LivekitRoom {
+    sender_to_thread: tokio::sync::mpsc::Sender<NetworkMessage>,
+    #[cfg(feature = "use_voice_chat")]
+    mic_sender_to_thread: tokio::sync::mpsc::Sender<Vec<i16>>,
+    receiver_from_thread:
+        tokio::sync::mpsc::Receiver<crate::comms::adapter::message_processor::IncomingMessage>,
+    #[allow(dead_code)]
+    room_id: String,
+    message_processor_sender: Option<
+        tokio::sync::mpsc::Sender<crate::comms::adapter::message_processor::IncomingMessage>,
+    >,
+    connection_state: Arc<AtomicU8>,
+}
+
+impl LivekitRoom {
+    pub fn new(remote_address: String, room_id: String) -> Self {
+        Self::new_with_options(remote_address, room_id, true)
+    }
+
+    pub fn new_with_options(
+        remote_address: String,
+        room_id: String,
+        #[cfg(feature = "use_voice_chat")] auto_subscribe: bool,
+        #[cfg(not(feature = "use_voice_chat"))] _auto_subscribe: bool,
+    ) -> Self {
+        // Disable auto_subscribe if voice chat is disabled
+        #[cfg(not(feature = "use_voice_chat"))]
+        let auto_subscribe = false;
+        #[cfg(feature = "use_voice_chat")]
+        let auto_subscribe = auto_subscribe;
+        let room_type = if auto_subscribe {
+            "Archipelago/Main"
+        } else {
+            "Scene"
+        };
+        tracing::debug!(
+            "🔧 Creating {} LiveKit room '{}' with auto_subscribe={}",
+            room_type,
+            room_id,
+            auto_subscribe
+        );
+        let (sender, receiver_from_thread) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
+        let (sender_to_thread, receiver) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
+
+        #[cfg(feature = "use_voice_chat")]
+        let (mic_sender_to_thread, mic_receiver) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
+        #[cfg(not(feature = "use_voice_chat"))]
+        let (_, mic_receiver) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
+
+        let room_id_clone = room_id.clone();
+        // Broadcast the realm's lambda URL so other clients can query this peer's profile
+        // directly from the same catalyst node, reducing cross-catalyst propagation delays.
+        let lambdas_endpoint = {
+            let global = DclGlobal::singleton();
+            let realm = global.bind().get_realm();
+            let url = realm.bind().get_lambda_server_base_url().to_string();
+            url
+        };
+        let connection_state = Arc::new(AtomicU8::new(LK_STATE_CONNECTING));
+        let connection_state_for_thread = connection_state.clone();
+        let _ = std::thread::Builder::new()
+            .name("livekit dcl thread".into())
+            .spawn(move || {
+                spawn_livekit_task(
+                    remote_address,
+                    receiver,
+                    sender,
+                    mic_receiver,
+                    room_id_clone,
+                    auto_subscribe,
+                    lambdas_endpoint,
+                    connection_state_for_thread,
+                );
+            })
+            .unwrap();
+
+        Self {
+            sender_to_thread,
+            #[cfg(feature = "use_voice_chat")]
+            mic_sender_to_thread,
+            receiver_from_thread,
+            room_id,
+            message_processor_sender: None,
+            connection_state,
+        }
+    }
+
+    pub fn connection_state_str(&self) -> &'static str {
+        match self.connection_state.load(Ordering::Relaxed) {
+            LK_STATE_CONNECTED => "connected",
+            LK_STATE_RECONNECTING => "reconnecting",
+            LK_STATE_DISCONNECTED => "disconnected",
+            _ => "connecting",
+        }
+    }
+
+    pub fn set_message_processor_sender(
+        &mut self,
+        sender: tokio::sync::mpsc::Sender<
+            crate::comms::adapter::message_processor::IncomingMessage,
+        >,
+    ) {
+        self.message_processor_sender = Some(sender);
+    }
+
+    fn _clean(&mut self) {}
+
+    fn _poll(&mut self) -> bool {
+        if let Some(processor_sender) = &self.message_processor_sender {
+            loop {
+                match self.receiver_from_thread.try_recv() {
+                    Ok(message) => {
+                        if let Err(err) = processor_sender.try_send(message) {
+                            tracing::warn!("Failed to forward message to processor: {}", err);
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return true,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return false,
+                }
+            }
+        } else {
+            loop {
+                match self.receiver_from_thread.try_recv() {
+                    Ok(_) => {} // drain
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return true,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return false,
+                }
+            }
+        }
+    }
+
+    fn _send_rfc4(&mut self, packet: rfc4::Packet, unreliable: bool) -> bool {
+        self._send_rfc4_targeted(packet, unreliable, NetworkMessageRecipient::All)
+    }
+
+    fn _send_rfc4_targeted(
+        &mut self,
+        packet: rfc4::Packet,
+        unreliable: bool,
+        recipient: NetworkMessageRecipient,
+    ) -> bool {
+        let mut data: Vec<u8> = Vec::new();
+        packet.encode(&mut data).unwrap();
+
+        self.sender_to_thread
+            .blocking_send(NetworkMessage {
+                data,
+                unreliable,
+                recipient,
+            })
+            .is_ok()
+    }
+
+    pub fn send_rfc4_targeted(
+        &mut self,
+        packet: rfc4::Packet,
+        unreliable: bool,
+        recipient: NetworkMessageRecipient,
+    ) -> bool {
+        self._send_rfc4_targeted(packet, unreliable, recipient)
+    }
+
+    fn _broadcast_voice(&mut self, frame: Vec<i16>) {
+        #[cfg(feature = "use_voice_chat")]
+        {
+            let _ = self.mic_sender_to_thread.blocking_send(frame);
+        }
+        #[cfg(not(feature = "use_voice_chat"))]
+        {
+            // Voice chat disabled - drop the frame
+            let _ = frame;
+        }
+    }
+}
+
+impl Adapter for LivekitRoom {
+    fn poll(&mut self) -> bool {
+        self._poll()
+    }
+
+    fn clean(&mut self) {
+        self._clean();
+    }
+
+    fn change_profile(&mut self, _new_profile: UserProfile) {
+        // Profile changes are now handled by MessageProcessor
+        tracing::error!("Profile changes should be handled by MessageProcessor");
+    }
+
+    fn consume_chats(&mut self) -> Vec<(H160, rfc4::Chat)> {
+        // Chats are now handled by MessageProcessor
+        Vec::new()
+    }
+
+    fn send_rfc4(&mut self, packet: rfc4::Packet, unreliable: bool) -> bool {
+        self._send_rfc4(packet, unreliable)
+    }
+
+    fn broadcast_voice(&mut self, frame: Vec<i16>) {
+        self._broadcast_voice(frame);
+    }
+
+    fn support_voice_chat(&self) -> bool {
+        #[cfg(feature = "use_voice_chat")]
+        {
+            true
+        }
+        #[cfg(not(feature = "use_voice_chat"))]
+        {
+            false
+        }
+    }
+
+    fn consume_scene_messages(&mut self, _scene_id: &str) -> Vec<(H160, Vec<u8>)> {
+        // Scene messages are now handled by MessageProcessor
+        Vec::new()
+    }
+
+    fn connection_state_str(&self) -> &'static str {
+        self.connection_state_str()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_livekit_task(
+    remote_address: String,
+    mut receiver: tokio::sync::mpsc::Receiver<NetworkMessage>,
+    sender: tokio::sync::mpsc::Sender<crate::comms::adapter::message_processor::IncomingMessage>,
+    mut mic_receiver: tokio::sync::mpsc::Receiver<Vec<i16>>,
+    room_id: String,
+    auto_subscribe: bool,
+    lambdas_endpoint: String,
+    connection_state: Arc<AtomicU8>,
+) {
+    let Some((address, token)) = parse_conn_string(&remote_address) else {
+        tracing::warn!("invalid livekit connection string for room '{}'", room_id);
+        connection_state.store(LK_STATE_DISCONNECTED, Ordering::Relaxed);
+        return;
+    };
+
+    let rt = Arc::new(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap(),
+    );
+
+    let rt2 = rt.clone();
+
+    let connection_state_in_task = connection_state.clone();
+    let task = rt.spawn(async move {
+        let connection_state = connection_state_in_task;
+        tracing::debug!("🔌 LiveKit connecting - room: '{}', auto_subscribe: {}", room_id, auto_subscribe);
+        let connect_result = livekit::prelude::Room::connect(&address, &token, RoomOptions{ auto_subscribe, adaptive_stream: false, dynacast: false, ..Default::default() }).await;
+
+        let (room, mut network_rx) = match connect_result {
+            Ok(result) => {
+                tracing::debug!("🔌 LiveKit connection successful - room: '{}'", room_id);
+                connection_state.store(LK_STATE_CONNECTED, Ordering::Relaxed);
+                result
+            }
+            Err(e) => {
+                tracing::warn!("🔌 LiveKit connection failed - room: '{}', error: {:?}", room_id, e);
+                // The livekit error chain is opaque across SDK versions (no reliable 401
+                // signal), so expired-token detection is NOT done here — ArchipelagoManager
+                // counts consecutive never-connected attempts instead and recycles its WS
+                // session for a fresh island token at the strike limit.
+                connection_state.store(LK_STATE_DISCONNECTED, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        // Set participant metadata (version, agent, platform, lambdasEndpoint)
+        let local_identity = room.local_participant().identity().0.clone();
+        {
+            let version = DclGlobal::get_version().to_string();
+            let metadata = serde_json::json!({
+                "dcl_version": version,
+                "agent": "godot",
+                "platform": "mobile",
+                "lambdasEndpoint": lambdas_endpoint,
+            }).to_string();
+
+            if let Err(e) = room.local_participant().set_metadata(metadata).await {
+                tracing::warn!("Failed to set participant metadata: {:?}", e);
+            } else {
+                tracing::debug!("Set participant metadata: version={}, agent=godot, platform=mobile, lambdasEndpoint={}", version, lambdas_endpoint);
+            }
+        }
+
+        // Only initialize microphone if voice chat feature is enabled
+        #[cfg(feature = "use_voice_chat")]
+        {
+            let native_source = NativeAudioSource::new(AudioSourceOptions{
+                echo_cancellation: true,
+                noise_suppression: true,
+                auto_gain_control: true,
+            }, 48000, 1, None);
+            let mic_track = LocalTrack::Audio(LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(native_source.clone())));
+            room.local_participant().publish_track(mic_track, TrackPublishOptions{ source: TrackSource::Microphone, ..Default::default() }).await.unwrap();
+
+            rt2.spawn(async move {
+                while let Some(data) = mic_receiver.recv().await {
+                    let samples_per_channel = data.len() as u32;
+                    let res = native_source.capture_frame(&livekit::webrtc::prelude::AudioFrame {
+                        data: data.into(),
+                        sample_rate: 48000,
+                        num_channels: 1,
+                        samples_per_channel
+                    }).await;
+
+                    if res.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        // Drain mic_receiver if voice chat is disabled to prevent blocking
+        #[cfg(not(feature = "use_voice_chat"))]
+        {
+            rt2.spawn(async move {
+                while mic_receiver.recv().await.is_some() {
+                    // Just drain the channel
+                }
+            });
+        }
+
+        // Track the current streamer audio task so we can abort it when a new one arrives
+        let mut streamer_audio_task: Option<tokio::task::JoinHandle<()>> = None;
+
+        'stream: loop {
+            tokio::select!(
+                incoming = network_rx.recv() => {
+                    let Some(incoming) = incoming else {
+                        tracing::debug!("🔌 LiveKit session ended - room: '{}', reason: network pipe broken", room_id);
+                        break 'stream;
+                    };
+
+                    match incoming {
+                        livekit::RoomEvent::Connected { participants_with_tracks } => {
+                            tracing::debug!("Connected to LiveKit room with {} participants", participants_with_tracks.len());
+
+                            // Subscribe to media tracks already in the room
+                            // and check metadata from existing participants
+                            for (participant, publications) in participants_with_tracks {
+                                let identity = participant.identity();
+                                let identity_str = identity.0.as_str();
+
+                                // Streamer publications (audio + video) are subscribed by
+                                // identity. Video-kind publications are subscribed from ANY
+                                // participant: player tokens are mic-only (gatekeeper), so
+                                // every video track is an authorized stream (e.g. a cast
+                                // presenter promoted from the audience).
+                                let is_streamer = is_streamer_identity(identity_str);
+                                if is_streamer {
+                                    tracing::debug!("Found streamer {} with {} publications", identity_str, publications.len());
+                                }
+                                for publication in publications {
+                                    if is_streamer || publication.kind() == livekit::track::TrackKind::Video {
+                                        tracing::debug!("Subscribing to media publication from {}: {:?} (kind: {:?})",
+                                            identity_str, publication.sid(), publication.kind());
+                                        publication.set_subscribed(true);
+                                    }
+                                }
+
+                                // Check metadata from existing participants (for version reporting)
+                                if let Some(address) = identity_str.as_h160() {
+                                    let metadata = participant.metadata();
+                                    if !metadata.is_empty() {
+                                        tracing::debug!(
+                                            "Existing participant {:#x} has metadata: {}",
+                                            address,
+                                            metadata
+                                        );
+                                        if let Err(e) = sender.send(IncomingMessage {
+                                            message: MessageType::PeerMetadata(metadata),
+                                            address,
+                                            room_id: room_id.clone(),
+                                        }).await {
+                                            tracing::warn!("Failed to send PeerMetadata for existing participant: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        livekit::RoomEvent::TrackPublished { publication, participant } => {
+                            let identity = participant.identity();
+                            let identity_str = identity.0.as_str();
+
+                            // Subscribe to streamer publications (by identity) and to
+                            // video-kind publications from any participant — player tokens
+                            // are mic-only, so a video track is always an authorized stream.
+                            if is_streamer_identity(identity_str)
+                                || publication.kind() == livekit::track::TrackKind::Video
+                            {
+                                tracing::debug!("Media publication from {}: {:?} (kind: {:?}) — subscribing",
+                                    identity_str, publication.sid(), publication.kind());
+                                publication.set_subscribed(true);
+                            }
+                        }
+                        livekit::RoomEvent::DataReceived { payload, participant, .. } => {
+                            if participant.is_none() {
+                                return;
+                            }
+                            let participant = participant.unwrap();
+                            let identity_str = participant.identity().0.clone();
+
+                            // Resolve address: valid H160 for regular peers, synthetic for
+                            // special identities like "authoritative-server"
+                            let address = if let Some(addr) = identity_str.as_str().as_h160() {
+                                addr
+                            } else {
+                                H160::from_low_u64_be(1)
+                            };
+
+                            let packet = match rfc4::Packet::decode(payload.as_slice()) {
+                                Ok(packet) => packet,
+                                Err(e) => {
+                                    tracing::warn!("unable to parse packet body: {e}");
+                                    continue;
+                                }
+                            };
+                            let Some(message) = packet.message else {
+                                tracing::warn!("received empty packet body");
+                                continue;
+                            };
+                            if let Err(e) = sender.send(IncomingMessage {
+                                message: MessageType::Rfc4(Rfc4Message {
+                                    message,
+                                    protocol_version: packet.protocol_version,
+                                }),
+                                address,
+                                room_id: room_id.clone(),
+                            }).await {
+                                tracing::warn!("app pipe broken ({e}), existing loop");
+                                break 'stream;
+                            }
+                        },
+                        livekit::RoomEvent::TrackSubscribed { track, publication, participant } => {
+                            let identity = participant.identity();
+                            let identity_str = identity.0.as_str();
+                            let address = identity_str.as_h160();
+                            let is_streamer = is_streamer_identity(identity_str);
+                            let track_source = match publication.source() {
+                                livekit::track::TrackSource::Screenshare => VideoTrackSourceKind::Screenshare,
+                                livekit::track::TrackSource::Camera => VideoTrackSourceKind::Camera,
+                                _ => VideoTrackSourceKind::Unknown,
+                            };
+                            let track_muted = publication.is_muted();
+
+                            match track {
+                                livekit::track::RemoteTrack::Audio(audio) => {
+                                    if is_streamer {
+                                        // Abort previous streamer audio task if any
+                                        if let Some(prev_task) = streamer_audio_task.take() {
+                                            tracing::debug!("Aborting previous streamer audio task before starting new one");
+                                            prev_task.abort();
+                                        }
+
+                                        // Streamer audio -> video player audio
+                                        let sender = sender.clone();
+                                        let room_id_clone = room_id.clone();
+                                        let identity_owned = identity_str.to_string();
+                                        // Use zero address for streamers
+                                        let address = address.unwrap_or_default();
+
+                                        streamer_audio_task = Some(rt2.spawn(async move {
+                                            let mut stream = livekit::webrtc::audio_stream::native::NativeAudioStream::new(audio.rtc_track(), 48000, 1);
+
+                                            tracing::debug!("streamer audio track from {:?}", identity_owned);
+
+                                            // get first frame to set sample rate
+                                            let Some(frame) = stream.next().await else {
+                                                tracing::warn!("dropped streamer audio track without samples");
+                                                return;
+                                            };
+
+                                            tracing::debug!(
+                                                "Streamer audio first frame: sample_rate={}, num_channels={}, samples_per_channel={}, data_len={}",
+                                                frame.sample_rate,
+                                                frame.num_channels,
+                                                frame.samples_per_channel,
+                                                frame.data.len()
+                                            );
+
+                                            if let Err(e) = sender.send(IncomingMessage {
+                                                message: MessageType::InitStreamerAudio(StreamerAudioInitData {
+                                                    sample_rate: frame.sample_rate,
+                                                    num_channels: frame.num_channels,
+                                                    samples_per_channel: frame.samples_per_channel,
+                                                }),
+                                                address,
+                                                room_id: room_id_clone.clone(),
+                                            }).await {
+                                                tracing::warn!("Failed to send InitStreamerAudio message: {}", e);
+                                                return;
+                                            }
+
+                                            while let Some(frame) = stream.next().await {
+                                                let frame: livekit::webrtc::prelude::AudioFrame = frame;
+                                                match sender.try_send(IncomingMessage {
+                                                    message: MessageType::StreamerAudioFrame(StreamerAudioFrameData {
+                                                        data: frame.data.to_vec(),
+                                                    }),
+                                                    address,
+                                                    room_id: room_id_clone.clone(),
+                                                }) {
+                                                    Ok(()) => (),
+                                                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                                        tracing::debug!("Streamer audio frame dropped: channel full");
+                                                    }
+                                                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                                        tracing::warn!("streamer audio receiver dropped, exiting task");
+                                                        return;
+                                                    },
+                                                }
+                                            }
+
+                                            tracing::debug!("streamer audio track ended, exiting task");
+                                        }));
+                                    } else if let Some(address) = address {
+                                        // Regular participant audio -> voice chat
+                                        let sender = sender.clone();
+                                        let room_id_clone = room_id.clone();
+                                        let identity_owned = identity_str.to_string();
+                                        rt2.spawn(async move {
+                                            let mut x = livekit::webrtc::audio_stream::native::NativeAudioStream::new(audio.rtc_track(), 48000, 1);
+
+                                            tracing::debug!("voice chat audio track from {:?}", identity_owned);
+
+                                            // get first frame to set sample rate
+                                            let Some(frame) = x.next().await else {
+                                                tracing::warn!("dropped audio track without samples");
+                                                return;
+                                            };
+
+                                            if let Err(e) = sender.send(IncomingMessage {
+                                                message: MessageType::InitVoice(VoiceInitData {
+                                                    sample_rate: frame.sample_rate,
+                                                    num_channels: frame.num_channels,
+                                                    samples_per_channel: frame.samples_per_channel,
+                                                }),
+                                                address,
+                                                room_id: room_id_clone.clone(),
+                                            }).await {
+                                                tracing::warn!("Failed to send InitVoice message: {}", e);
+                                                return;
+                                            }
+
+                                            while let Some(frame) = x.next().await {
+                                                let frame: livekit::webrtc::prelude::AudioFrame = frame;
+                                                match sender.try_send(IncomingMessage {
+                                                    message: MessageType::VoiceFrame(VoiceFrameData {
+                                                        data: frame.data.to_vec(),
+                                                    }),
+                                                    address,
+                                                    room_id: room_id_clone.clone(),
+                                                }) {
+                                                    Ok(()) => (),
+                                                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => (),
+                                                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                                        tracing::warn!("livekit audio receiver dropped, exiting task");
+                                                        return;
+                                                    },
+                                                }
+                                            }
+
+                                            tracing::debug!("audio track ended, exiting task");
+                                        });
+                                    }
+                                },
+                                livekit::track::RemoteTrack::Video(video) => {
+                                    // Accept every subscribed video track: we only subscribe
+                                    // to authorized streams (streamer identities or video-kind
+                                    // publications), so no further identity gating is needed.
+                                    {
+                                        let sender = sender.clone();
+                                        let room_id_clone = room_id.clone();
+                                        // Use zero address for streamers without ethereum identity
+                                        let address = address.unwrap_or_default();
+                                        let identity_owned = identity_str.to_string();
+                                        let sid = video.sid().to_string();
+
+                                        rt2.spawn(async move {
+                                            use livekit::webrtc::video_stream::native::NativeVideoStream;
+                                            use livekit::webrtc::video_frame::VideoBuffer;
+                                            use livekit::webrtc::native::yuv_helper;
+
+                                            let mut stream = NativeVideoStream::new(video.rtc_track());
+
+                                            tracing::debug!("video track {} subscribed from {:?}", sid, identity_owned);
+
+                                            // Get first frame for initialization
+                                            let Some(frame) = stream.next().await else {
+                                                tracing::warn!("dropped video track without frames");
+                                                return;
+                                            };
+
+                                            // Get buffer dimensions
+                                            let buffer = &frame.buffer;
+                                            let width = buffer.width();
+                                            let height = buffer.height();
+
+                                            tracing::debug!("Received first video frame: {}x{}, type: {:?}", width, height, buffer.buffer_type());
+
+                                            // Send init message
+                                            if let Err(e) = sender.send(IncomingMessage {
+                                                message: MessageType::InitVideo(VideoInitData {
+                                                    width,
+                                                    height,
+                                                    sid: sid.clone(),
+                                                    identity: identity_owned.clone(),
+                                                    source: track_source,
+                                                    muted: track_muted,
+                                                }),
+                                                address,
+                                                room_id: room_id_clone.clone(),
+                                            }).await {
+                                                tracing::warn!("Failed to send InitVideo: {}", e);
+                                                return;
+                                            }
+
+                                            // Helper function to convert video buffer to RGBA
+                                            fn convert_to_rgba(buffer: &dyn VideoBuffer) -> Option<Vec<u8>> {
+                                                let width = buffer.width();
+                                                let height = buffer.height();
+                                                let stride_rgba = width * 4;
+                                                let mut rgba_data = vec![0u8; (width * height * 4) as usize];
+
+                                                // Convert to I420 first (common format)
+                                                let i420 = buffer.to_i420();
+
+                                                let (stride_y, stride_u, stride_v) = i420.strides();
+                                                let (data_y, data_u, data_v) = i420.data();
+
+                                                // Use yuv_helper to convert I420 to ABGR (which is RGBA in little-endian memory)
+                                                yuv_helper::i420_to_abgr(
+                                                    data_y,
+                                                    stride_y,
+                                                    data_u,
+                                                    stride_u,
+                                                    data_v,
+                                                    stride_v,
+                                                    &mut rgba_data,
+                                                    stride_rgba,
+                                                    width as i32,
+                                                    height as i32,
+                                                );
+
+                                                Some(rgba_data)
+                                            }
+
+                                            // Convert and send the first frame
+                                            if let Some(rgba_data) = convert_to_rgba(buffer.as_ref()) {
+                                                if let Err(e) = sender.try_send(IncomingMessage {
+                                                    message: MessageType::VideoFrame(VideoFrameData {
+                                                        data: rgba_data,
+                                                        width,
+                                                        height,
+                                                        sid: sid.clone(),
+                                                    }),
+                                                    address,
+                                                    room_id: room_id_clone.clone(),
+                                                }) {
+                                                    tracing::warn!("Failed to send first video frame: {:?}", e);
+                                                }
+                                            }
+
+                                            // Process subsequent frames
+                                            while let Some(frame) = stream.next().await {
+                                                let buffer = &frame.buffer;
+                                                let width = buffer.width();
+                                                let height = buffer.height();
+
+                                                if let Some(rgba_data) = convert_to_rgba(buffer.as_ref()) {
+                                                    match sender.try_send(IncomingMessage {
+                                                        message: MessageType::VideoFrame(VideoFrameData {
+                                                            data: rgba_data,
+                                                            width,
+                                                            height,
+                                                            sid: sid.clone(),
+                                                        }),
+                                                        address,
+                                                        room_id: room_id_clone.clone(),
+                                                    }) {
+                                                        Ok(()) => (),
+                                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                                            // Drop frame if channel is full (backpressure)
+                                                        },
+                                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                                            tracing::warn!("Video receiver dropped, exiting task");
+                                                            return;
+                                                        },
+                                                    }
+                                                }
+                                            }
+
+                                            tracing::debug!("video track {} ended, exiting task", sid);
+                                            let _ = sender.send(IncomingMessage {
+                                                message: MessageType::VideoTrackEnded(sid),
+                                                address,
+                                                room_id: room_id_clone,
+                                            }).await;
+                                        });
+                                    }
+                                },
+                            }
+                        }
+                        livekit::RoomEvent::ParticipantConnected(participant) => {
+                            let identity_str = participant.identity().0.clone();
+                            let address = identity_str.as_str().as_h160()
+                                .unwrap_or_else(|| H160::from_low_u64_be(1));
+                            tracing::debug!("👋 Participant {} ({:#x}) connected to LiveKit room", identity_str, address);
+                            if let Err(e) = sender.send(IncomingMessage {
+                                message: MessageType::PeerJoined,
+                                address,
+                                room_id: room_id.clone(),
+                            }).await {
+                                tracing::warn!("Failed to send PeerJoined: {}", e);
+                            }
+                        }
+                        livekit::RoomEvent::ParticipantDisconnected(participant) => {
+                            let identity_str = participant.identity().0.clone();
+                            let address = identity_str.as_str().as_h160()
+                                .unwrap_or_else(|| H160::from_low_u64_be(1));
+                            tracing::debug!("👋 Participant {} ({:#x}) disconnected from LiveKit room", identity_str, address);
+                            if let Err(e) = sender.send(IncomingMessage {
+                                message: MessageType::PeerLeft,
+                                address,
+                                room_id: room_id.clone(),
+                            }).await {
+                                tracing::warn!("Failed to send PeerLeft: {}", e);
+                            }
+                        }
+                        livekit::RoomEvent::Reconnecting => {
+                            tracing::debug!("🔌 LiveKit reconnecting - room: '{}'", room_id);
+                            connection_state.store(LK_STATE_RECONNECTING, Ordering::Relaxed);
+                        }
+                        livekit::RoomEvent::Reconnected => {
+                            tracing::debug!("🔌 LiveKit reconnected - room: '{}'", room_id);
+                            connection_state.store(LK_STATE_CONNECTED, Ordering::Relaxed);
+                        }
+                        livekit::RoomEvent::Disconnected { reason } => {
+                            connection_state.store(LK_STATE_DISCONNECTED, Ordering::Relaxed);
+                            // Log LiveKit session end with reason
+                            tracing::debug!(
+                                "🔌 LiveKit session ended - room: '{}', reason: {:?}",
+                                room_id,
+                                reason
+                            );
+
+                            // Map LiveKit disconnect reason to our DisconnectReason
+                            use super::message_processor::DisconnectReason;
+                            let disconnect_reason = match reason {
+                                livekit::DisconnectReason::DuplicateIdentity => DisconnectReason::DuplicateIdentity,
+                                livekit::DisconnectReason::RoomClosed => DisconnectReason::RoomClosed,
+                                livekit::DisconnectReason::ParticipantRemoved => DisconnectReason::Kicked,
+                                livekit::DisconnectReason::RoomDeleted => DisconnectReason::RoomClosed,
+                                _ => DisconnectReason::Other,
+                            };
+
+                            if let Err(e) = sender.send(IncomingMessage {
+                                message: MessageType::Disconnected(disconnect_reason),
+                                address: H160::zero(),
+                                room_id: room_id.clone(),
+                            }).await {
+                                tracing::warn!("Failed to send Disconnected: {}", e);
+                            }
+                            break 'stream;
+                        }
+                        livekit::RoomEvent::RoomMetadataChanged { metadata, .. } => {
+                            tracing::debug!("Room metadata changed: {}", metadata);
+                            if let Err(e) = sender.send(IncomingMessage {
+                                message: MessageType::RoomMetadataChanged(metadata),
+                                address: H160::zero(),
+                                room_id: room_id.clone(),
+                            }).await {
+                                tracing::warn!("Failed to send RoomMetadataChanged: {}", e);
+                            }
+                        }
+                        livekit::RoomEvent::ParticipantMetadataChanged { participant, metadata, .. } => {
+                            let identity_str = participant.identity().0.clone();
+
+                            // Skip local participant's own metadata changes
+                            if identity_str == local_identity {
+                                continue;
+                            }
+
+                            // Handle metadata changes from remote participants (version reporting for staging/dev)
+                            if let Some(address) = identity_str.as_str().as_h160() {
+                                tracing::debug!(
+                                    "Received metadata from {:#x}: {}",
+                                    address,
+                                    metadata
+                                );
+                                if let Err(e) = sender.send(IncomingMessage {
+                                    message: MessageType::PeerMetadata(metadata),
+                                    address,
+                                    room_id: room_id.clone(),
+                                }).await {
+                                    tracing::warn!("Failed to send PeerMetadata message: {}", e);
+                                }
+                            }
+                        }
+                        livekit::RoomEvent::TrackMuted { participant: _, publication } => {
+                            let _ = sender.send(IncomingMessage {
+                                message: MessageType::VideoTrackMuted {
+                                    sid: publication.sid().to_string(),
+                                    muted: true,
+                                },
+                                address: H160::zero(),
+                                room_id: room_id.clone(),
+                            }).await;
+                        }
+                        livekit::RoomEvent::TrackUnmuted { participant: _, publication } => {
+                            let _ = sender.send(IncomingMessage {
+                                message: MessageType::VideoTrackMuted {
+                                    sid: publication.sid().to_string(),
+                                    muted: false,
+                                },
+                                address: H160::zero(),
+                                room_id: room_id.clone(),
+                            }).await;
+                        }
+                        livekit::RoomEvent::TrackUnsubscribed { track, .. } => {
+                            // The frame task also notices the stream draining, but this
+                            // prunes the selection registry promptly on explicit unsubscribes.
+                            let _ = sender.send(IncomingMessage {
+                                message: MessageType::VideoTrackEnded(track.sid().to_string()),
+                                address: H160::zero(),
+                                room_id: room_id.clone(),
+                            }).await;
+                        }
+                        livekit::RoomEvent::ActiveSpeakersChanged { speakers } => {
+                            let identities: Vec<String> = speakers
+                                .iter()
+                                .map(|p| p.identity().0.clone())
+                                .collect();
+                            let _ = sender.send(IncomingMessage {
+                                message: MessageType::ActiveSpeakersChanged(identities),
+                                address: H160::zero(),
+                                room_id: room_id.clone(),
+                            }).await;
+                        }
+                        _ => { tracing::debug!("Event: {:?}", incoming); }
+                    };
+                }
+                outgoing = receiver.recv() => {
+                    let Some(outgoing) = outgoing else {
+                        tracing::debug!("🔌 LiveKit session ended - room: '{}', reason: app pipe broken", room_id);
+                        break 'stream;
+                    };
+
+                    let reliable = !outgoing.unreliable;
+                    let destination_identities = match outgoing.recipient {
+                        NetworkMessageRecipient::All => Vec::new(),
+                        NetworkMessageRecipient::Peer(address) => {
+                            vec![ParticipantIdentity(format!("{address:#x}"))]
+                        }
+                        NetworkMessageRecipient::AuthServer => {
+                            vec![ParticipantIdentity("authoritative-server".to_string())]
+                        }
+                    };
+
+                    if let Err(e) = room.local_participant().publish_data(DataPacket {
+                        payload: outgoing.data,
+                        reliable,
+                        destination_identities,
+                        ..Default::default()
+                    }).await {
+                        tracing::debug!("outgoing failed: {e}; not exiting loop though since it often fails at least once or twice at the start...");
+                        // break 'stream;
+                    };
+                }
+            );
+        }
+
+        tracing::debug!("🔌 LiveKit room closing - room: '{}'", room_id);
+        connection_state.store(LK_STATE_DISCONNECTED, Ordering::Relaxed);
+        if let Err(e) = room.close().await {
+            tracing::warn!("🔌 LiveKit room.close() failed - room: '{}', error: {}", room_id, e);
+        }
+    });
+
+    let _ = rt.block_on(task);
+    // Covers a panicked/aborted task too — anyone still holding the handle sees disconnected
+    connection_state.store(LK_STATE_DISCONNECTED, Ordering::Relaxed);
+}
+
+#[cfg(target_os = "android")]
+pub mod android {
+    use jni::{
+        sys::{jint, JNI_VERSION_1_6},
+        JavaVM,
+    };
+    use std::ffi::c_void;
+
+    #[allow(non_snake_case)]
+    #[no_mangle]
+    pub extern "C" fn JNI_OnLoad(vm: JavaVM, _: *mut c_void) -> jint {
+        tracing::debug!("Initializing JNI_OnLoad");
+        livekit::webrtc::android::initialize_android(&vm);
+        JNI_VERSION_1_6
+    }
+
+    #[allow(non_snake_case)]
+    #[no_mangle]
+    pub extern "C" fn Java_org_webrtc_LibaomAv1Decoder_nativeIsSupported() -> bool {
+        tracing::debug!("nativeIsSupported");
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_streamer_identity, parse_conn_string};
+
+    #[test]
+    fn parse_conn_string_keeps_host_and_extracts_token() {
+        let (address, token) =
+            parse_conn_string("wss://dcl.livekit.cloud?access_token=abc123").unwrap();
+        assert_eq!(address, "wss://dcl.livekit.cloud/");
+        assert_eq!(token, "abc123");
+    }
+
+    #[test]
+    fn parse_conn_string_preserves_explicit_port() {
+        let (address, token) = parse_conn_string("ws://127.0.0.1:7880?access_token=tok").unwrap();
+        assert_eq!(address, "ws://127.0.0.1:7880/");
+        assert_eq!(token, "tok");
+    }
+
+    #[test]
+    fn parse_conn_string_finds_token_after_other_params() {
+        let (_, token) = parse_conn_string("wss://example.com?foo=bar&access_token=tok2").unwrap();
+        assert_eq!(token, "tok2");
+    }
+
+    #[test]
+    fn parse_conn_string_without_token_yields_empty_token() {
+        let (address, token) = parse_conn_string("wss://example.com/path").unwrap();
+        assert_eq!(address, "wss://example.com/path");
+        assert_eq!(token, "");
+    }
+
+    #[test]
+    fn parse_conn_string_rejects_invalid_uri() {
+        assert!(parse_conn_string("not a uri at all ::").is_none());
+    }
+
+    #[test]
+    fn detects_legacy_rtmp_ingress_streamer_suffix() {
+        assert!(is_streamer_identity(
+            "0x95e9a6bf9f8130bbfdb7b09ac1caefc8fda806f5-streamer"
+        ));
+    }
+
+    #[test]
+    fn detects_cast_v2_browser_streamer_prefix() {
+        assert!(is_streamer_identity(
+            "stream:6da24e2c-8557-4a67-96b0-1e6a56f1e546:9f0c4f9b-2f6a-4a6e-8f0e-2b8b8c0d1e2f"
+        ));
+    }
+
+    #[test]
+    fn detects_presentation_bot_prefix() {
+        assert!(is_streamer_identity("presentation-bot:room-42"));
+    }
+
+    #[test]
+    fn rejects_regular_wallet_identities() {
+        assert!(!is_streamer_identity(
+            "0x7d272f93f85d4094c889d386690a1ce925deaee7"
+        ));
+        assert!(!is_streamer_identity("authoritative-server"));
+        assert!(!is_streamer_identity(
+            "watch:world-prd-scene-room-gather.dcl.eth-bafkreid:uuid"
+        ));
+    }
+}

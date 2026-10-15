@@ -1,0 +1,347 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Decentraland Godot Explorer is a cross-platform metaverse client that combines:
+- **Godot Engine 4.6.2** (custom fork) for 3D rendering and UI
+- **Rust** for core systems and performance-critical components
+- **GDScript** for game logic
+- **JavaScript/V8** runtime for executing Decentraland SDK scenes
+
+## Essential Commands
+
+All commands use the xtask pattern via `cargo run --`:
+
+### System Health & Dependencies
+```bash
+# Check system health and dependencies
+cargo run -- doctor
+
+# Install dependencies (specify platforms: linux, windows, macos, android, ios)
+cargo run -- install                      # Installs protoc and Godot only (fresh download)
+cargo run -- install --targets linux      # Also installs Linux export templates
+cargo run -- install --targets android    # Also installs Android tools and templates
+cargo run -- install --targets ios        # iOS templates (keeps debug symbols)
+cargo run -- install --targets ios --strip-ios  # iOS templates (strips debug symbols to save disk)
+cargo run -- install --cache              # Use cached downloads instead of re-downloading
+cargo run -- install --cache --targets ios --strip-ios  # Cached + strip iOS
+
+# Strip iOS templates manually (saves ~1.9GB disk space)
+cargo run -- strip-ios-templates
+
+# Clear download cache
+cargo run -- clean-cache
+```
+
+### Development
+```bash
+# Build the Rust library
+cargo run -- build                        # Build for host platform
+cargo run -- build -r                     # Release mode
+cargo run -- build --target android       # Android build (no cargo-ndk, uses direct cargo)
+cargo run -- build --target ios           # iOS build (macOS only)
+
+# Run the client (automatically builds first)
+cargo run -- run                          # Run client (always a phone layout: --emulate-ios by default)
+cargo run -- run -- --emulate-android     # Run client with the Android layout instead
+cargo run -- run -r                       # Release mode
+cargo run -- run -e                       # Run editor
+cargo run -- run -e --target android      # Run editor and also build for Android
+cargo run -- run --target android         # Build, export APK, and deploy to device
+cargo run -- run --target ios             # Build, export IPA, and deploy to device
+cargo run -- run --target android --only-lib  # Build and push .so only (requires debug APK)
+cargo run -- run --target android --only-lib -- --skip-lobby  # Hotreload with app parameters
+
+# Feature flags
+cargo run -- build --no-default-features --features use_livekit,use_deno
+cargo run -- run --no-default-features --features use_livekit,use_deno
+
+# Run tests
+cargo run -- run --itest                  # Integration tests
+cargo run -- run --stest                  # Scene tests
+```
+
+### Android Development
+```bash
+# Export Android builds (keystores are generated automatically if needed)
+cargo run -- export --target android --format apk           # Build debug APK (uses debug keystore)
+cargo run -- export --target android --format apk --release # Build signed APK (uses release keystore)
+cargo run -- export --target android --format aab --release # Build AAB for Play Store
+cargo run -- export --target quest --format apk --release   # Meta Quest build
+
+# Note: Keystores are automatically created in .bin/ folder:
+# - .bin/debug.keystore for debug builds
+# - .bin/release.keystore for release builds
+```
+
+### Code Quality
+```bash
+# Rust formatting and linting
+cd lib
+cargo fmt --all
+cargo clippy -- -D warnings
+
+# GDScript formatting and linting
+gdformat godot/
+gdlint godot/
+
+# Validate all GDScript files
+cargo run -- check-gdscript
+
+# Generate test coverage
+cargo run -- coverage --dev
+
+# Import assets
+cargo run -- import-assets
+```
+
+### Export & Distribution
+```bash
+# Export for target OS
+cargo run -- export --target linux
+cargo run -- export --target windows
+cargo run -- export --target macos
+cargo run -- export --target android --format apk
+cargo run -- export --target android --format aab
+cargo run -- export --target ios            # dev export (debug template)
+cargo run -- export --target ios --release  # what CI ships to TestFlight / the App Store
+```
+
+iOS exports run a **windowed** Godot editor (not `--headless`) because the shader baker only works
+with a RenderingDevice renderer, and they need the **Metal toolchain** (`xcodebuild -downloadComponent
+MetalToolchain` on Xcode 26) to compile the baked shaders to `.metallib`. The export fails unless
+Godot's output shows `Started Baking shaders (N steps)` and packed `.metal.cache` files, and it also
+fails when the SPIR-V-only warning (missing toolchain) appears; `DCL_SKIP_SHADER_BAKE_CHECK=1`
+bypasses that check for local debugging only. The baked files live in
+`godot/.godot/exported/<hash>/shader_baker/iOS/metal/`, not next to the exported IPA.
+
+## Architecture
+
+### Directory Structure
+- **`lib/`**: Core Rust library with all systems
+  - `src/dcl/`: Decentraland protocol types, SDK bindings, JS runtime glue
+  - `src/scene_runner/`: Scene threads, CRDT handling, per-component systems (`components/`)
+  - `src/av/`: Audio/video processing (video player)
+  - `src/comms/`: WebRTC, voice chat (livekit)
+  - `src/auth/`: Ethereum wallet and sign-in
+  - `src/content/`: Asset loading and caching
+- **`godot/`**: Godot project
+  - `src/decentraland_components/`: Custom Godot nodes for DCL features
+    - `avatar/impostor/`: Distance-based avatar LOD (billboard sprites for far avatars). Render handled by `MultiMeshInstance3D` + `Texture2DArray` in Rust `AvatarScene`; capture path uses scene-tree off-screen `AvatarPreview`.
+  - `src/ui/`: UI components and HUD
+  - `src/tool/`: Editor tools
+- **`src/`**: xtask build system
+
+### Key Systems
+
+1. **Scene Management**: Scenes are loaded via the JavaScript runtime (deno_core/v8) which executes Decentraland SDK code
+2. **Avatar System**: Handles wearables, animations, and customization through GLTF models
+3. **Content Delivery**: Uses IPFS and content servers for asset distribution
+4. **Voice Chat**: Integrated livekit WebRTC for spatial audio
+5. **Ethereum Integration**: Wallet connection for Web3 features
+
+### Platform Support
+- Desktop: Linux, Windows, macOS
+- Mobile: Android (API 29+), iOS
+- VR: OpenXR compatible devices
+
+## Development Workflow
+
+1. **Always run formatting before commits**:
+   ```bash
+   cd lib && cargo fmt --all
+   gdformat godot/
+   ```
+
+2. **Test changes with**:
+   ```bash
+   cargo run -- run
+   ```
+
+3. **For Android development**:
+   ```bash
+   # First install Android tools and dependencies
+   cargo run -- install --targets android
+
+   # Build for Android
+   cargo run -- build --target android
+
+   # Export APK or AAB (keystore is automatically generated and configured)
+   cargo run -- export --target android --format apk --release
+
+   # Or use Docker (for CI/CD):
+   docker run -v $(pwd):/app/ -it kuruk/dcl-godot-android-builder-rust
+   ```
+
+4. **For iOS development** (macOS only):
+   ```bash
+   # Install iOS templates (keeps debug symbols by default)
+   cargo run -- install --targets ios
+
+   # Install with stripping (saves ~1.9GB disk space)
+   cargo run -- install --targets ios --strip-ios
+
+   # Strip already-installed templates manually
+   cargo run -- strip-ios-templates
+   ```
+
+   **Important notes about iOS templates:**
+   - Local installs **keep debug symbols by default** (useful for Sentry crash symbolication)
+   - Use `--strip-ios` to strip debug symbols and save disk space (~2.1GB -> ~234MB)
+   - Use `--cache` to reuse previously downloaded files instead of re-downloading
+   - The strip command auto-detects already-stripped templates (< 1GB) and skips
+
+5. **Android APK hosting & mobile distribution**:
+   Every Android CI build (`android_builds.yml`, on every push/PR) uploads the signed
+   APK to the R2 mobile-artifacts bucket and links it from the PR build-report comment.
+   Required repo secrets: `MOBILE_ARTIFACTS_R2_{ACCESS_KEY_ID,SECRET_ACCESS_KEY,ENDPOINT,BUCKET}`.
+   APKs are served at `https://mobile-artifacts.dclregenesislabs.xyz/android/<branch>/<sha>/decentraland.godot.client.apk`.
+
+   `mobile_distribute.yml` builds & ships iOS → TestFlight and, once the commit's APK is
+   in R2, posts a Slack "🤖 Android Build Ready" notification (uses the existing
+   `SLACK_WEBHOOK_URL`). It does not rebuild Android and does not push to any store. For
+   **`main`/`release`** builds it additionally surfaces the **AAB** (Play Store artifact)
+   and posts a "📦 Android AAB Ready" Slack notification — the AAB is only uploaded for
+   `main`/`release` builds.
+
+   Status is mirrored in a Slack root card (`.github/scripts/slack-root.py`, merge-on-read
+   via message metadata; byte-duplicated in `decentraland/godot-asc-deploy` — edit both
+   copies together) and ONE sticky **📱 Mobile build pipeline** PR comment
+   (`.github/scripts/pr-card.py`, same model — state lives in a hidden HTML comment; each leg
+   merges only its own fields; `SHA` + `RUN_ID` guard against a superseded run). `pr-card.py`
+   lives only here: asc-deploy has no token for this repo, so the `ios-wait` job watches the
+   asc-deploy run (matched by its `run-name` `🍏 <branch> @ <sha>`, via
+   `ASC_DEPLOY_DISPATCH_TOKEN`) and mirrors the TestFlight result onto the card.
+
+   It is triggered by:
+   - **Every push to `release`** → full distribution.
+   - **A weekday (Mon–Fri) 09:00 UTC cron on `main`** → distribution, but only when
+     `main` changed since the last *successful* main distribution run (compared via
+     `gh run list --workflow mobile_distribute.yml --branch main --status success`). When
+     unchanged the `prepare` job logs "main unchanged — skipping" and the iOS/Android jobs
+     are skipped (the run still concludes successfully, which is what the next cron run
+     compares against).
+   - **The `build` label** (or legacy alias `build-ios`) on a PR.
+   - **Manual `workflow_dispatch`** on `main`/`release`.
+   ```bash
+   # On a PR: add the build label (iOS TestFlight + Android Slack notification)
+   gh pr edit --add-label "build"
+
+   # Manual trigger on main/release (GitHub Actions UI or gh CLI)
+   gh workflow run "📱 Mobile Build & Distribute (iOS TestFlight + Android APK)" --ref main
+   ```
+   The label is automatically removed after the build is triggered on PRs.
+
+## Code hygiene
+
+The habits AI-assisted changes most often get wrong in this repo. Reviewers hold PRs to them
+(`REVIEW.md` §3 Tier 3 items 19–20, §7).
+
+### Comments
+
+- **Two or three lines, only where the code cannot say it.** A comment gives the next reader
+  what they need to not break the line in front of them ("not `call_deferred`: the same flush
+  re-enters this and spins"). The investigation, the root cause and the options you rejected go
+  in the commit message and the PR body, where they are read once.
+- **Never narrate history.** A comment about code that is no longer there ("a prior attempt
+  added…, it was removed because…", "previously set by the AnimationPlayer", "replaces the old
+  `dcl_splash.tscn` that used to live in…") is a tombstone: the reader cannot act on it and git
+  already holds the story. When you remove code, remove its comment too, and do not leave a
+  comment in its place saying what used to be there.
+- **Do not restate the code or the diff.** No `# Added to support X`, no "what this change
+  does" block at the top of a function or file, no docstring that repeats the signature in
+  prose. `##` docstrings are for public API a caller needs — one or two lines.
+- **Comment-only leftovers are dead code.** A function whose body is `pass` plus a comment, or
+  a `TODO` without an issue link, does not ship.
+
+### File size
+
+- **Files at the gdlint cap are closed for new features.** `.gdlintrc` caps GDScript at 1900
+  lines / 45 public methods, and `global.gd`, `explorer.gd`, `modal_manager.gd` and `avatar.gd`
+  are within 30 lines of it. New behaviour goes in its own file — a component, a `RefCounted`
+  helper, an autoload — and the big file gets one call into it, not a new block. Same in Rust,
+  where nothing enforces it: `communication_manager.rs`, `scene_manager.rs` and
+  `content_provider.rs` are past 3000 lines.
+- **Never raise `max-file-lines` / `max-public-methods` inside a feature PR.** The line cap has
+  been raised four times since December 2025 (1000 → 1900), every time inside a feature or fix
+  PR. If a change cannot land without it, split the file first, in its own PR.
+- **Rule of thumb:** over ~1500 lines, ask where else the code could live before adding to it.
+
+### Diff discipline
+
+- Touch only what the change needs: no reformatting, renaming or reordering of neighbouring
+  code, no defensive checks for states the code cannot reach.
+- No helper, base class or abstraction for a single call site — the repo is consciously
+  non-abstracted (`REVIEW.md` §9).
+- English only in comments and identifiers; no `print(` left behind (`REVIEW.md` §7).
+
+## Important Notes
+
+- The project uses a forked Godot 4.6.2 - don't update the engine version
+- Windows users should clone to short paths (e.g., `C:/gexplorer`)
+- The Rust toolchain is pinned in `rust-toolchain.toml` (1.90)
+- For coverage testing, install: `rustup component add llvm-tools-preview && cargo install grcov`
+- Integration with Decentraland SDK7 requires the JavaScript runtime to be properly initialized
+- **Android builds**: don't use cargo-ndk (it breaks with NDK 27); build with plain cargo and `GN_ARGS=use_custom_libcxx=false`
+- **Dependencies**: Run `cargo run -- doctor` to check system health and missing dependencies
+
+## Command Dependencies
+
+Each xtask command checks its prerequisites and says what to run first:
+- `build` requires: protoc installed
+- `run` requires: Godot installed (builds automatically)
+- `export` requires: Godot installed, host built, target platform built
+- `import-assets` requires: Godot installed (builds automatically)
+
+## Common Tasks
+
+### Adding a new Decentraland component:
+1. Create the Rust implementation in `lib/src/scene_runner/components/`
+2. Add GDExtension bindings in the component file
+3. Create corresponding GDScript class in `godot/src/decentraland_components/`
+4. Register in the scene runner
+
+### Rust Log Filtering
+
+All Rust `tracing` output is routed through Godot's print functions. Errors and warnings include real source file/line metadata for Sentry and the Godot debugger.
+
+**Setting the log filter:**
+
+```bash
+# Via environment variable (desktop only)
+RUST_LOG=debug cargo run -- run
+RUST_LOG="dclgodot::comms=debug,warn" cargo run -- run
+
+# Via command-line argument (all platforms)
+cargo run -- run -- --rust-log=debug
+cargo run -- run -- --rust-log="dclgodot::scene_runner=trace,dclgodot::comms=debug,warn"
+
+# Via deeplink (mobile/desktop)
+# decentraland://open?rust-log=dclgodot::analytics=debug,warn
+```
+
+Priority: `--rust-log` > `RUST_LOG` env var > default (`warn` on desktop, `info` on mobile).
+
+The filter can also be changed at runtime from GDScript: `DclGlobal.set_rust_log_filter("dclgodot::comms=debug,warn")`.
+
+**Rust Log Filter editor tool:**
+
+In the Godot editor, go to **DCL Tools → Rust Log Filter...** to open a visual tool that:
+- Shows the full module tree scanned from `lib/src/`
+- Lets you toggle per-module log levels (ERROR/WARN/INFO/DEBUG/TRACE)
+- Previews the generated filter string
+- "Apply to Run Args" injects `--rust-log=...` into the editor's run arguments
+- "Copy --rust-log" / "Copy RUST_LOG" copies the filter for use in terminal or deeplinks
+- Settings persist across editor restarts via EditorSettings
+
+### Debugging scene loading:
+1. Enable verbose logging: `RUST_LOG=debug cargo run -- run`
+2. Check the scene runner logs in `lib/src/scene_runner/`
+3. Verify content server responses in `lib/src/content/`
+
+### Working with the avatar system:
+- Avatar definitions are in `lib/src/avatars/`
+- Wearables are loaded via GLTF in `lib/src/content/gltf/` (`lib/src/content/wearable_entities.rs`)
+- Animation system uses Godot's AnimationPlayer nodes

@@ -1,0 +1,95 @@
+name: 🔎 Test & Coverage
+on:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.actor }}-${{ github.head_ref || github.run_number }}-${{ github.ref }}-coverage
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Test & Coverage
+    runs-on: gpu-godot-docker
+    timeout-minutes: 60
+    env:
+      GODOT4_BIN: ${{ github.workspace }}/.bin/godot/godot4_bin
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      # Clean up stale state from previous runs on self-hosted runner
+      - name: Clean workspace
+        run: git clean -xdf
+
+      # To host test-realm local server
+      - name: Use Node.js 16.x
+        uses: actions/setup-node@v1
+        with:
+          node-version: 24
+
+      - name: Prepare and run local test-realm
+        run: |
+          mkdir -p tests/server
+          cd tests/server
+          npm init -y
+          npm install @dcl/scene-explorer-tests@1.0.0-20240430222335.commit-2b82e41
+          sed -i 's|https://decentraland.github.io/scene-explorer-tests/|http://localhost:7666/|g' node_modules/@dcl/scene-explorer-tests/static/scene-explorer-tests/about
+          npm i -g http-server
+          http-server node_modules/@dcl/scene-explorer-tests/static -p 7666 &
+        # /changerealm http://localhost:7666/scene-explorer-tests/
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # @stable
+        with:
+          toolchain: "1.90"
+          components: llvm-tools-preview
+
+      - name: Setup Vulkan and graphics rendering
+        uses: ./.github/actions/setup-vulkan
+
+      # Dependencies section
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+
+      - name: cargo run -- install
+        run: cargo run -- install --no-templates
+
+      # Build section
+
+      - name: Download grcov
+        run: |
+          mkdir -p "${HOME}/.local/bin"
+          curl -sL https://github.com/mozilla/grcov/releases/download/v0.8.10/grcov-x86_64-unknown-linux-gnu.tar.bz2 | tar jxf - -C "${HOME}/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Build
+        run: cargo run -- build
+
+      - name: Import Assets
+        uses: ./.github/actions/import-assets
+        with:
+          cache: false
+
+      - name: Run xtask coverage
+        run: |
+          export DISPLAY=:99
+          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
+          cargo run -- coverage
+
+      - name: Upload to codecov.io
+        if: success() || failure()
+        uses: codecov/codecov-action@v3
+        with:
+          files: rust/coverage/*.lcov
+
+      - name: Upload artifacts
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-snapshots
+          path: |
+            tests/snapshots/scenes/comparison/**/*
+            tests/snapshots/avatar-image-generation/comparison/**/*
+            tests/snapshots/client/comparison/**/*

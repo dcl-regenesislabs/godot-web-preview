@@ -1,0 +1,32 @@
+name: Import assets
+description: Import assets
+
+inputs:
+  cache:
+    description: 'Whether to use cache for Godot assets'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # Step 1: Restore cache
+    - name: Restore Godot assets cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+      with:
+        path: godot/.godot
+        key: ${{ runner.os }}-godot-assets-cache-4.6.2
+
+    # Step 2: Run the command that generates/uses the assets
+    - name: Import assets
+      shell: bash
+      run: cargo run -- import-assets
+
+    # Step 3: Save cache
+    - name: Cache Godot assets
+      if: inputs.cache == 'true'
+      uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+      with:
+        path: godot/.godot
+        key: ${{ runner.os }}-godot-assets-cache-4.6.2

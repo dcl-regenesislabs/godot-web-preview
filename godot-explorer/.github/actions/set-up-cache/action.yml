@@ -1,0 +1,15 @@
+name: Set up cache
+description: Set up cache
+inputs:
+  cache-name:
+    description: The cache base name (job name by default).
+    default: ${{ github.job }}
+
+runs:
+  using: composite
+  steps:
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          .
+          lib/

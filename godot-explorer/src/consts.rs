@@ -1,0 +1,121 @@
+pub const GODOT_PROJECT_FOLDER: &str = "./godot/";
+pub const GODOT_SENTRY_ADDON_FOLDER: &str = "./godot/addons/sentry";
+pub const BIN_FOLDER: &str = "./.bin/";
+pub const RUST_LIB_PROJECT_FOLDER: &str = "./lib/";
+pub const EXPORTS_FOLDER: &str = "./exports/";
+
+/// sentry-godot addon release. Bump both together: the installer replaces
+/// `godot/addons/sentry` whenever its `.version` marker differs from this.
+pub const SENTRY_ADDON_VERSION: &str = "2.1.1";
+pub const SENTRY_ADDON_URL: &str = "https://github.com/getsentry/sentry-godot/releases/download/2.1.1/sentry-godot-2.1.1+d288ad9.zip";
+
+pub const PROTOC_BASE_URL: &str =
+    "https://github.com/protocolbuffers/protobuf/releases/download/v23.2/protoc-23.2-";
+
+pub const GODOT_ENGINE_RELEASES_BASE_URL: &str = "https://godot-engine-releases.dclexplorer.com/";
+
+pub const GODOT_CURRENT_VERSION: &str = "4.6.2";
+
+/// Short commit SHA (first 9 chars) of the godotengine fork this stable build was compiled from.
+/// Must match the `gh.<sha>` segment printed by `godot4_bin --version`
+/// (e.g. `4.6.2.stable.gh.6ddcadb64 - Protocol Squad`) and the SHA-tagged release path published
+/// by the godot-engine-releases pipeline. Bump it in lockstep with a new fork publish: it busts the
+/// local download cache (keys embed it) and pins the immutable per-SHA release URLs below.
+pub const GODOT_BUILD_SHA: &str = "5ce8f80f4";
+
+/// TEMPORARY per-checkout override to pull the Godot editor + export templates from a specific
+/// fork *branch* build (published by CI under `/branches/<slug>/`) instead of the pinned stable
+/// release — without having to pass `--branch` on every `install` / `run` / `export`.
+///
+/// `None` = use the pinned stable build (`GODOT_BUILD_SHA`). `Some("<branch>")` = use that
+/// branch's CI build. An explicit `--branch` on the CLI still takes precedence over this.
+///
+/// Reset to `None` once the branch is merged and `GODOT_BUILD_SHA` is bumped to the merge commit —
+/// leaving a branch pinned here makes every dev/CI pull an unmerged engine build. Currently unset:
+/// the release freed-instance check (decentraland/godotengine#25) is merged into `4.6.2` and
+/// `GODOT_BUILD_SHA` points at that merge commit, which also carries the failed-`Main::setup2`
+/// Android fix (#21), the Mali vertex-lighting NaN fix (#23) and the sha1 build-id fix (#20).
+pub const GODOT_USE_BRANCH: Option<&str> = None;
+
+/// Release tag identifying a specific fork build — `<version>.stable.gh.<sha>`, mirroring the
+/// `--version` string. Single source for the release URL path segment, the on-disk template SHA
+/// marker, and the installed-binary version validation.
+pub fn godot_release_tag() -> String {
+    format!("{GODOT_CURRENT_VERSION}.stable.gh.{GODOT_BUILD_SHA}")
+}
+
+/// Editor (binary) base URL for the pinned stable fork build, e.g.
+/// `https://godot-engine-releases.dclexplorer.com/4.6.2.stable.gh.36d9ae5fa/editors/`.
+/// Honors the `GODOT_USE_BRANCH` override: when set, resolves to the branch build's URL instead.
+pub fn godot_editor_base_url() -> String {
+    if let Some(branch) = GODOT_USE_BRANCH {
+        return godot_editor_base_url_for_branch(branch);
+    }
+    format!(
+        "{GODOT_ENGINE_RELEASES_BASE_URL}{}/editors/",
+        godot_release_tag()
+    )
+}
+
+/// Compressed-templates base URL for the pinned stable fork build, e.g.
+/// `https://godot-engine-releases.dclexplorer.com/4.6.2.stable.gh.36d9ae5fa/compressed-templates/`.
+/// Honors the `GODOT_USE_BRANCH` override: when set, resolves to the branch build's URL instead.
+pub fn godot_templates_base_url() -> String {
+    if let Some(branch) = GODOT_USE_BRANCH {
+        return godot_templates_base_url_for_branch(branch);
+    }
+    format!(
+        "{GODOT_ENGINE_RELEASES_BASE_URL}{}/compressed-templates/",
+        godot_release_tag()
+    )
+}
+
+/// Sanitizes a git branch name for use in the release artifact URL path.
+/// Slashes (e.g. `fix/foo`) are replaced with dashes (`fix-foo`) to match how
+/// branch builds are published under `/branches/<sanitized>/`.
+pub fn sanitize_branch_for_url(branch: &str) -> String {
+    branch.replace('/', "-")
+}
+
+/// Returns the editor base URL for a given branch build, e.g.
+/// `https://godot-engine-releases.dclexplorer.com/branches/<branch>/editors/`
+pub fn godot_editor_base_url_for_branch(branch: &str) -> String {
+    let slug = sanitize_branch_for_url(branch);
+    format!("{GODOT_ENGINE_RELEASES_BASE_URL}branches/{slug}/editors/")
+}
+
+/// Returns the compressed-templates base URL for a given branch build, e.g.
+/// `https://godot-engine-releases.dclexplorer.com/branches/<branch>/compressed-templates/`
+pub fn godot_templates_base_url_for_branch(branch: &str) -> String {
+    let slug = sanitize_branch_for_url(branch);
+    format!("{GODOT_ENGINE_RELEASES_BASE_URL}branches/{slug}/compressed-templates/")
+}
+
+pub const GODOT_PLATFORM_FILES: &[(&str, &[&str])] = &[
+    ("ios", &["ios.zip"]),
+    (
+        "android",
+        &[
+            "android_debug.apk",
+            "android_release.apk",
+            "android_source.zip",
+        ],
+    ),
+    ("linux", &["linux_debug.x86_64", "linux_release.x86_64"]),
+    ("macos", &["macos.zip"]),
+    (
+        "windows",
+        &["windows_debug_x86_64.exe", "windows_release_x86_64.exe"],
+    ),
+];
+
+// iOS export name (matches export.rs)
+pub const IOS_EXPORT_NAME: &str = "decentraland-godot-client";
+
+// Android SDK/NDK constants - these are repeated 6+ times in the code
+pub const ANDROID_NDK_VERSION: &str = "28.1.13356709";
+// TODO: Use these constants to replace hardcoded values throughout the codebase
+#[allow(dead_code)]
+pub const ANDROID_SDK_BUILD_TOOLS_VERSION: &str = "35.0.0";
+#[allow(dead_code)]
+pub const ANDROID_PLATFORM_VERSION: &str = "android-35";

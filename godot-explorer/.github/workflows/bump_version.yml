@@ -1,0 +1,95 @@
+name: 🔢 Bump Marketing Version
+
+# Bumps ONLY the marketing SemVer (MAJOR.MINOR.PATCH), kept in sync across:
+#   - lib/Cargo.toml  (source of truth)
+#   - Android version/name
+#   - iOS application/short_version
+# The store BUILD NUMBER (Android version/code / iOS application/version) is allocated from the
+# Cloudflare Worker (idempotent per commit SHA) and stamped at build time by the
+# `compute-build-number` action — this workflow never touches it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Which part of the SemVer to bump"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - major
+          - minor
+          - patch
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump-version:
+    name: Bump marketing version and create PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute new version
+        id: ver
+        run: |
+          set -eu
+          CURRENT=$(grep -oP '^version = "\K[0-9]+\.[0-9]+\.[0-9]+' lib/Cargo.toml | head -1)
+          IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          case "${{ inputs.level }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+          NEW="${MAJOR}.${MINOR}.${PATCH}"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumping marketing version: $CURRENT -> $NEW (${{ inputs.level }})"
+
+      - name: Apply new version
+        run: |
+          set -eu
+          CURRENT="${{ steps.ver.outputs.current }}"
+          NEW="${{ steps.ver.outputs.new }}"
+          # lib/Cargo.toml (source of truth) + its lock entry
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW}\"/" lib/Cargo.toml
+          sed -i "0,/name = \"dclgodot\"/{ /name = \"dclgodot\"/{ n; s/version = \"${CURRENT}\"/version = \"${NEW}\"/ } }" lib/Cargo.lock
+          # Android version/name + iOS short_version (marketing strings shown in the stores)
+          sed -i "s/version\/name=\"${CURRENT}\"/version\/name=\"${NEW}\"/" godot/export_presets.cfg
+          sed -i "s/application\/short_version=\"${CURRENT}\"/application\/short_version=\"${NEW}\"/" godot/export_presets.cfg
+
+      - name: Verify changes
+        run: |
+          echo "Changes to commit:"
+          git diff --stat
+          echo ""
+          git diff
+
+      - name: Create branch, commit, and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          CURRENT="${{ steps.ver.outputs.current }}"
+          NEW="${{ steps.ver.outputs.new }}"
+          BRANCH="bump-version-v${NEW}"
+          git checkout -b "$BRANCH"
+          git add lib/Cargo.toml lib/Cargo.lock godot/export_presets.cfg
+          git commit -m "bump marketing version to v${NEW}"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "bump marketing version to v${NEW}" \
+            --body "Automated marketing version bump (${{ inputs.level }}): v${CURRENT} -> v${NEW}.
+
+          Store build numbers (Android versionCode / iOS CFBundleVersion) are allocated from the Cloudflare Worker and stamped at build time — not changed here." \
+            --base "${{ github.ref_name }}"

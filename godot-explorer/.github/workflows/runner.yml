@@ -1,0 +1,92 @@
+name: 🔗 GHA
+on:
+  push:
+    branches:
+      - main
+      - release
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.actor }}-${{ github.head_ref || github.run_number }}-${{ github.ref }}-runner
+  cancel-in-progress: true
+
+jobs:
+  # First stage: Fast formatting checks only
+  static-checks:
+    name: 📊 Static checks
+    uses: ./.github/workflows/static_checks.yml
+
+  # Second stage: Clippy and build checks that require compilation
+  clippy:
+    name: 🔧 Clippy & Build Checks
+    needs: static-checks
+    uses: ./.github/workflows/clippy.yml
+
+  # Third stage: Run all the builds and tests (all depend on static-checks)
+
+  # Temporarily disabled: GPU self-hosted runner is down
+  # test-coverage:
+  #   name: 🔎 Test & Coverage
+  #   needs: static-checks
+  #   uses: ./.github/workflows/coverage.yml
+
+  android-build:
+    name: 🤖 Android
+    needs: static-checks
+    uses: ./.github/workflows/android_builds.yml
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      APK_ANDROID_KEYSTORE_BASE64: ${{ secrets.APK_ANDROID_KEYSTORE_BASE64 }}
+      APK_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.APK_ANDROID_KEYSTORE_PASSWORD }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+      MOBILE_ARTIFACTS_R2_ACCESS_KEY_ID: ${{ secrets.MOBILE_ARTIFACTS_R2_ACCESS_KEY_ID }}
+      MOBILE_ARTIFACTS_R2_SECRET_ACCESS_KEY: ${{ secrets.MOBILE_ARTIFACTS_R2_SECRET_ACCESS_KEY }}
+      MOBILE_ARTIFACTS_R2_ENDPOINT: ${{ secrets.MOBILE_ARTIFACTS_R2_ENDPOINT }}
+      MOBILE_ARTIFACTS_R2_BUCKET: ${{ secrets.MOBILE_ARTIFACTS_R2_BUCKET }}
+      BUILD_NUMBER_SECRET: ${{ secrets.BUILD_NUMBER_SECRET }}
+
+  # Mobile distribution (iOS TestFlight + Android APK-ready Slack notification) is
+  # triggered separately via mobile_distribute.yml:
+  # - Label 'build' (alias 'build-ios') on PRs
+  # - Manual workflow dispatch (ref: main/release)
+  # The signed Android APK is uploaded to R2 by android_builds.yml on every build.
+
+  linux-build:
+    name: 🐧 Linux
+    needs: static-checks
+    uses: ./.github/workflows/linux_builds.yml
+  # Disable Windows and MacOS builds for now
+  # macos-build:
+  #   name: 🍎 macOS
+  #   needs: static-checks
+  #   uses: ./.github/workflows/macos_builds.yml
+
+  # windows-build:
+  #   name: 🏁 Windows
+  #   needs: static-checks
+  #   uses: ./.github/workflows/windows_builds.yml
+
+  # # Third stage: Extras
+  docker-build-test:
+    name: 🐳 Docker builds and test
+    needs: linux-build
+    uses: ./.github/workflows/docker_build_test.yml
+    with:
+      publish_docker: ${{ contains(github.event.pull_request.labels.*.name, 'publish-docker') }}
+    secrets:
+      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+      QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+
+  # Temporarily disabled: GPU self-hosted runner is down
+  # benchmark:
+  #   name: 📊 Benchmark Report
+  #   needs: static-checks
+  #   uses: ./.github/workflows/benchmark.yml
+  #   secrets:
+  #     BENCHMARK_AWS_ACCESS_KEY_ID: ${{ secrets.BENCHMARK_AWS_ACCESS_KEY_ID }}
+  #     BENCHMARK_AWS_SECRET_ACCESS_KEY: ${{ secrets.BENCHMARK_AWS_SECRET_ACCESS_KEY }}
+  #     BENCHMARK_AWS_ENDPOINT_URL: ${{ secrets.BENCHMARK_AWS_ENDPOINT_URL }}
+  #     BENCHMARK_AWS_S3_BUCKET: ${{ secrets.BENCHMARK_AWS_S3_BUCKET }}

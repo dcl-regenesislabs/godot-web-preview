@@ -1,0 +1,124 @@
+name: 🐳 Docker builds and test
+on:
+  workflow_call:
+    inputs:
+      publish_docker:
+        description: 'Whether to publish Docker image to quay.io'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      QUAY_USERNAME:
+        required: true
+      QUAY_TOKEN:
+        required: true
+
+concurrency:
+  group: ci-${{ github.actor }}-${{ github.head_ref || github.run_number }}-${{ github.ref }}-docker
+  cancel-in-progress: true
+
+jobs:
+  build-images:
+    name: Build images and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Download Godot Lib Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libdclgodot_linux
+
+          ## REVIEW: this is being overwritten by the next artifact 
+          ## -> libdclgodot_linux with a libdclgodot.so ~ 100MB
+          ## -> decentraland-godot-linux with a libdclgodot.so  ~ 520MB
+
+      - name: Download Godot Executables Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: decentraland-godot-linux
+
+      - name: Build Docker Image
+        id: build-image
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: godot-explorer
+          tags: |
+            ${{ github.sha }}
+            ${{ github.ref == 'refs/heads/release' && 'latest' || (github.ref == 'refs/heads/main' && 'staging' || 'next') }}
+          dockerfiles: |
+            ./Dockerfile
+          build-args: |
+            COMMIT_HASH=${{ github.sha }}
+
+      - name: Push To quay.io
+        if: github.ref == 'refs/heads/release' || inputs.publish_docker
+        id: push-to-quay
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: quay.io/decentraland
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+
+      - name: Run avatar test
+        run: |
+          mkdir -p avatars-output
+          podman run --rm -v \
+            $(pwd)/tests/avatars-test-input.json:/app/avatars.json \
+            -v $(pwd)/avatars-output:/app/output localhost/godot-explorer:${{ github.sha }}
+
+      - name: Compare images with snapshots
+        run: |
+          cargo run -- compare-image-folders \
+            --snapshots tests/snapshots/avatar-image-generation/ \
+            --result ${{ github.workspace }}/avatars-output/
+
+      # The entrypoint swallows the process exit code (`|| true`), so this
+      # asserts on the report the renderer writes instead. Image snapshots can
+      # be added later from this job's artifacts (same flow as the avatar test).
+      - name: Run asset-renderer test
+        run: |
+          mkdir -p assets-output
+          podman run --rm \
+            -v $(pwd)/tests/asset-renderer-test-input.json:/app/assets.json \
+            --env PRESET_ARGS="--asset-renderer --asset-input-file assets.json" \
+            -v $(pwd)/assets-output:/app/output localhost/godot-explorer:${{ github.sha }}
+          cat assets-output/asset-renderer/report.json
+          # status "ok" only means save_png returned OK, so also assert the
+          # expected items, the expected file count, and that each PNG has bytes
+          jq -e '[.results[].id] | sort == ["red-tshirt-standalone","sunglasses-on-avatar","wave-emote"]' \
+            assets-output/asset-renderer/report.json
+          jq -e 'all(.results[]; .status == "ok")' assets-output/asset-renderer/report.json
+          jq -e '[.results[].files[]] | length == 7' assets-output/asset-renderer/report.json
+          for png in $(jq -r '.results[].files[]' assets-output/asset-renderer/report.json); do
+            test -s "assets-output/${png#output/}" || { echo "empty or missing: $png"; exit 1; }
+          done
+
+      # COMMENTED DUE TO FLAKY TEST
+      # - name: Run scene-rendering test
+      #   run: |
+      #     mkdir -p scenes-output
+      #     podman run --rm -v \
+      #       $(pwd)/tests/scene-renderer-test-input.json:/app/scenes.json \
+      #       --env PRESET_ARGS="--scene-renderer --scene-input-file scenes.json" \
+      #       -v $(pwd)/scenes-output:/app/output localhost/godot-explorer:${{ github.sha }}
+
+      # - name: Compare images with snapshots
+      #   run: |
+      #     cargo run -- compare-image-folders \
+      #       --snapshots tests/snapshots/scene-image-generation/ \
+      #       --result ${{ github.workspace }}/scenes-output/
+
+      - name: Upload artifacts
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-snapshots
+          path: |
+            ${{ github.workspace }}/avatars-output/**/*
+            ${{ github.workspace }}/assets-output/**/*
+            ${{ github.workspace }}/scenes-output/**/*

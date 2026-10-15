@@ -1,0 +1,68 @@
+name: 🏁 Windows Builds
+on:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.actor }}-${{ github.head_ref || github.run_number }}-${{ github.ref }}-windows
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows
+    strategy:
+      fail-fast: false
+    runs-on: warp-windows-latest-x64-4x
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # @stable
+        with:
+          toolchain: "1.90"
+
+      - name: Set up WarpBuild cache
+        uses: ./.github/actions/set-up-warp-cache
+
+      # Dependencies section
+      - name: Install dependencies
+        uses: ./.github/actions/install-deps
+
+      # Build section
+      - name: Cargo install
+        run: cargo run -- install --targets windows
+
+      - name: Set prod flag
+        uses: ./.github/actions/set-prod-flag
+
+      - name: Build
+        run: cargo run -- build --release ${{ env.PROD_FLAG }}
+
+      - name: Test
+        working-directory: lib
+        run: cargo test --release -- --skip auth
+        env:
+          PROTOC: ${{ github.workspace }}/.bin/protoc/bin/protoc.exe
+
+      # Export section
+      - name: Import Assets
+        uses: ./.github/actions/import-assets
+        with:
+          cache: false
+
+      - name: Export
+        run: cargo run -- export
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decentraland-godot-windows
+          path: |
+            exports/**/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libdclgodot_windows
+          path: |
+            lib/target/libdclgodot_windows/dclgodot.dll
+          if-no-files-found: error
