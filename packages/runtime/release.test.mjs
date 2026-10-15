@@ -10,8 +10,8 @@ const check = (tag) => execFileSync(process.execPath, [fileURLToPath(new URL('./
 })
 
 it('releases only the stable version named by the tag', () => {
-  assert.doesNotThrow(() => check(`v${version}`))
-  for (const tag of ['main', 'v999.0.0', `v${version}-rc.1`, 'v$(touch injected)']) {
+  assert.doesNotThrow(() => check(version))
+  for (const tag of ['main', '999.0.0', `v${version}`, `${version}-rc.1`, `${version}+build.1`, '$(touch injected)']) {
     assert.throws(() => check(tag), /Release tag must match/)
   }
 })

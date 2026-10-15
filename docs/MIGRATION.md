@@ -20,28 +20,30 @@ copyright notices, native files and upstream workflows were preserved. Only root
 build/release configuration, documentation and update tooling changed during the
 migration. The previous checkout and installed editor runtime remain available.
 
-## First remote setup
+## Remote setup and first release
 
-After the owner authorizes publishing the source:
+The owner authorized publishing the source as a public repository on October 15,
+2026. `main` and `chore/consolidate-preview` were pushed at `0172ee13cf`.
+The first complete build was started in
+[GitHub Actions](https://github.com/dcl-regenesislabs/godot-web-preview/actions/runs/38817762080).
 
-1. Create an empty `dcl-regenesislabs/godot-web-preview` repository with the intended
-   visibility; do not initialize a competing README or license. The local `origin`
-   already points at this target.
-2. Publish the prepared history as `main`. Configure branch protection and require
+Remaining release setup:
+
+1. Configure branch protection and require
    the build, browser and package checks. Allow merge commits for subtree update
    PRs; do not require linear history. Run the complete Mobile preview workflow
    from the new repository before the first release.
-3. Allow Actions to create PRs for the daily updater. Protect the `production`
+2. Verify Actions can create PRs for the daily updater. Protect the `production`
    environment with release reviewers.
-4. Bootstrap the npm package if needed and configure its trusted publisher with
+3. Bootstrap the npm package if needed and configure its trusted publisher with
    organization `dcl-regenesislabs`, repository `godot-web-preview`, workflow
    `preview.yml`, environment `production`. See the runtime README.
-5. Publish a matching version tag only after validation and release approval, then
+4. Publish a matching numeric version tag (`0.1.0`, without `v`) only after validation
+   and release approval. Oddish publishes it using OIDC. Then
    refresh the consuming editor's registry lockfile.
 
-The migration itself creates no GitHub repository, push, npm release or scheduled
-remote run. Source tree equality and local script/package tests do not substitute
-for the first complete build in the new GitHub repository.
+No npm release has been published. Source tree equality and local script/package
+tests do not substitute for the first complete build in the new GitHub repository.
 
 ## Local validation
 

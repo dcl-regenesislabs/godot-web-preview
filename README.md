@@ -1,236 +1,58 @@
-# Decentraland explorer in the browser (WebGPU)
+# Godot Web Preview
 
-This repo runs the [Decentraland Godot explorer](https://github.com/decentraland/godot-explorer) inside a
-web browser, with no install. It's the same explorer that ships on desktop and mobile, compiled for the web
-and drawn with **WebGPU**, the browser's modern graphics API.
+Browser runtime for previewing Decentraland scenes with the mobile client inside a
+web editor. This public repository contains the Godot engine, the mobile explorer,
+and the browser changes needed to build them together for WebGPU.
 
-Today it boots, enters the world as a guest, and renders Genesis Plaza from its real scene code: buildings,
-lights, avatars and the scene's own UI, at a steady 30 fps in Chrome on a Mac.
+The distributable is `@dcl-regenesislabs/mobile-preview-runtime`: prebuilt engine,
+client and assets. An editor installs an exact npm version and supplies the scene
+server, asset relay and preview controls. It does not build Godot or Rust.
+The first npm release is being prepared as **0.1.0**; it is not published yet.
 
-## Try it
+## What the preview supports
 
-```bash
-git clone https://github.com/dcl-regenesislabs/godot-web-preview.git
-cd godot-web-preview
-./build.sh
-node godot-explorer/web/tools/serve-web.mjs godot-explorer/build/web 8060
-```
+- Embedded or detached preview with mobile controls: click scene UI directly,
+  drag the world to rotate the camera, and use the joystick to move.
+- A parcel-sized grass floor, without surrounding islands or decorative blades.
+- Pause/resume without restarting the runtime. Closing releases the instance;
+  minimizing keeps its memory allocated.
+- Scene UI, scene messages, MessageBus and authoritative state through browser
+  LiveKit. Pulse uses WebTransport for player presence and movement.
+- Gameplay APIs including `movePlayerTo`, emotes, teleport/realm confirmation
+  dialogs, scene events, world time and locale.
 
-Open **http://localhost:8060/** in Chrome. Loading takes a minute or two, then you appear at Genesis Plaza
-as a guest.
+The consuming editor owns screenshots, hot reload, embedding and tab controls.
+It must keep the scene server running while the preview is open. The runtime uses
+its own guest identity; editor wallet credentials are not passed to it.
 
-### What you need
+This is a development preview, not the full mobile app. Voice, video, wallet
+operations, portable experiences and file-reading APIs are excluded. Movement
+interpolation and full world multiplayer remain unsupported. Chrome on Apple
+Silicon is the tested interactive environment; Linux Chromium checks graphics
+regressions in CI. Native phone behavior and sustained memory/CPU use still need
+device testing. Frame rate and startup time depend on the scene and hardware.
 
-- **A clone** of this public repository. Engine and explorer sources are included
-  as Git subtrees; no access to separate private source repositories is needed.
-- **A Mac** (tested on Apple Silicon). Linux will probably work but is untested; Windows isn't supported.
-- **These tools:**
-  - Xcode Command Line Tools: `xcode-select --install`
-  - Rust: [rustup](https://rustup.rs). The build installs the exact versions it needs.
-  - Python 3.10 or newer: `brew install python@3.13`. The Mac's own Python is too old.
-  - SCons, Godot's build tool: `pip3 install scons`
-  - Node 18+: `brew install node`
-  - Google Chrome
-- **About 25 GB of disk.**
-- **Time for the first build:** it runs in the background on 2 cores, so the computer stays usable while it
-  works. That takes up to an hour or two, mostly the engine. `JOBS=8 ./build.sh` is much faster but takes
-  over the machine.
+## Sources and upstream updates
 
-## How it works
+| Path | Purpose |
+| --- | --- |
+| `godotengine/` | Godot 4.6.2 with the WebGPU driver and browser fixes |
+| `godot-explorer/` | Decentraland's mobile explorer with browser runtime changes |
+| `upstreams.json` | Canonical upstream repositories and imported revisions |
+| `emsdk/` | Public Emscripten submodule, initialized by the build |
+| `packages/runtime/` | npm packaging and artifact integrity checks |
+| `tests/` | Graphics, input, gameplay, networking and updater regressions |
+| `build.sh` | Engine, native importer, WebAssembly and export commands |
 
-The explorer has three parts, and each needed a browser version:
+**The engine and explorer are Git subtrees.** They appear as normal folders because
+all their files are committed here. Unlike submodules, they do not require a
+separate checkout or get a special repository link in GitHub. Subtree import
+commits preserve the upstream merge history; browser changes are separate commits.
 
-| Part | On desktop and mobile | In the browser |
-|---|---|---|
-| **Engine:** draws the world | Godot 4.6.2 drawing with Vulkan or Metal | The same Godot, compiled to WebAssembly, drawing with WebGPU |
-| **Core:** content, avatars, networking, scenes | A Rust library | The same Rust library, compiled to WebAssembly, using the browser's networking |
-| **Scenes:** each parcel's JavaScript | Runs inside the app in an embedded V8 | Runs in the browser's own JavaScript engine, in a background worker per scene |
-
-**WebAssembly** is how browsers run code written in languages like C++ and Rust at near-native speed.
-**WebGPU** gives that code access to the graphics card, much like Vulkan or Metal do.
-
-Godot has no WebGPU support of its own. The driver comes from the community project
-[dwalter/godotwebgpu](https://github.com/dwalter/godotwebgpu), with fixes on top in our engine fork.
-
-## How the build works
-
-The finished product is a folder of ordinary files, `godot-explorer/build/web/`, that any web server can
-host:
-
-| File | What it is |
-|---|---|
-| `index.html`, `index.js` | The page and the loader |
-| `index.wasm`, `index.side.wasm` | The Godot engine |
-| `dclgodot.wasm` | The explorer's Rust core |
-| `scene-comms.js`, `livekit-client.umd.js` | Local-preview scene networking |
-| `pulse.js` | Pulse WebTransport for player state |
-| `index.pck` | The game content: scripts, scenes, UI, models, textures |
-
-The browser opens the page and starts the engine. The engine loads the Rust core as a plugin and runs the
-content.
-
-`./build.sh` produces that folder in five steps:
-
-1. **Install the compiler.** Downloads Emscripten, the toolchain that turns C++ and Rust into WebAssembly.
-2. **Build the engine.** Compiles our Godot fork for the browser, with only the WebGPU renderer and plugin
-   support. This is the slow step, about an hour.
-3. **Install the editor.** Downloads the Godot editor the explorer uses and builds the Rust core for the Mac.
-   The editor needs that build only to open the project.
-4. **Build the Rust core for the browser.** Parts that can't run in a browser are turned off: the embedded
-   JavaScript engine, voice chat and native video. Browser versions replace them where needed.
-5. **Package it.** The editor combines the engine, the Rust core and the content into `build/web/`.
-
-Shaders convert to WGSL in the browser. The build disables optional shader precompilation
-with `webgpu_precompile_shaders=no`, so it needs neither a native Tint tool nor glslang.
-
-After a change, re-run only the steps it affects:
-
-| You changed | Run |
-|---|---|
-| The engine (`godotengine/`) | `./build.sh engine export` |
-| The Rust core or scene runtime (`godot-explorer/lib/`) | `./build.sh wasm export` |
-| Scripts, scenes or assets (`godot-explorer/godot/`) | `./build.sh export` |
-
-## What works and what doesn't yet
-
-**Works:**
-- Loading the world.
-- 3D rendering with lights, shadows and materials.
-- Avatars.
-- The HUD and UI.
-- Scene scripts, including their own UI, player data and signed requests to their servers.
-- Guest login.
-
-**Not yet:**
-- Clicking or interacting with scene objects.
-- Full world multiplayer and voice chat (local preview scene messages and Pulse player state are supported).
-- Wallet sign-in.
-- Video.
-- Some in-world banners, blocked by server settings (CORS).
-
-The full explorer has been tested in Chrome on a Mac. Graphics regressions also run
-in Linux Chromium with SwiftShader; that does not establish hardware performance on Linux.
-
-## What's in this repo
-
-| Path | What |
-|---|---|
-| `godot-explorer/` | The explorer, with the browser-specific code added |
-| `godotengine/` | Our Godot engine fork with the WebGPU driver |
-| `emsdk/` | The Emscripten compiler (downloaded and set up by `build.sh`) |
-| `tests/` | Small WebGPU test scenes, useful when working on the engine |
-| `build.sh` | The whole build in one script |
-
-More detail:
-- [godot-explorer/web/REPORT.md](godot-explorer/web/REPORT.md): findings, sizes, risks and next steps.
-- [CLAUDE.md](CLAUDE.md): working notes for developers and AI assistants.
-
-## Local scene editor preview
-
-The editor preview runs the same mobile renderer with account panels, remote polling,
-telemetry and surrounding islands disabled. Minimizing pauses scene processing and
-rendering; restoring retains the running instance. Closing releases it. The default grass
-floor covers the scene's parcels with two triangles per parcel in one shared mesh;
-surrounding islands and grass blades remain disabled.
-
-The local preview uses mobile input: click buttons directly and drag the world to
-look around. It keeps the mouse cursor free, including after Escape or closing a
-panel; desktop pointer lock is disabled for mobile mode.
-
-Local preview scenes connect to their scene room through the bundled browser LiveKit
-client. Binary SDK messages, authoritative state synchronization and MessageBus
-messages use the original preview scene ID. The runtime signs its own guest
-connection; editor wallet credentials are not relayed. Voice and remote media are
-disabled. Queues are bounded while paused or disconnected, and unloading a scene
-closes its room. The editor must keep its scene server running.
-
-Pulse uses browser WebTransport on port 7743 for player presence, movement and
-emotes, sharing the native client's authentication and protocol. Local preview
-launches enable it explicitly and derive the same `lsd:` realm as the scene
-server from the scene entity ID. `--no-pulse` opts out; `--pulse-server=host:port`
-overrides the endpoint and requires a browser-trusted TLS certificate. Reliable
-queues are bounded and pending movement is coalesced to the latest sample. A
-closed preview releases its connection; minimizing pauses gameplay updates.
-
-Use [the scene-server regression](tests/scene-comms) to check an actual server
-request/reply and synchronized state.
-
-Gameplay APIs use the native renderer handlers: `movePlayerTo` (including separate
-camera/avatar targets), predefined/custom emotes, stopping emotes, teleport and
-realm-change confirmation dialogs. Scene event subscriptions, world time and locale
-come from the running client. The existing scene boundary checks still apply.
-Use [the gameplay regression](tests/scene-gameplay) to verify these in the preview.
-Movement interpolation, portable experiences, file reads, wallet operations and
-external URL/NFT dialogs remain unsupported by the browser runtime.
-
-After the initial toolchain and native setup, build the preview with:
-
-```bash
-./build.sh engine wasm preview
-```
-
-For GDScript or HTML changes, `./build.sh preview` is enough. Unlike `export`, this
-leaves launch arguments to the editor. The output is `godot-explorer/build/web/`.
-The export command fails if Godot fails; it never reports an older export as a new build.
-
-This repository publishes `@dcl-regenesislabs/mobile-preview-runtime` to npm using OIDC.
-The editor installs an exact released version. For local runtime development, pass the
-export's absolute path as `MOBILE_PREVIEW_EXPORT` to the editor dev stack.
-The editor owns runtime hosting, screenshots, hot reload and the scene resource relay.
-This workspace owns the engine, mobile runtime source and their build toolchain.
-See [npm packaging and release setup](packages/runtime/README.md).
-Compiled output is ignored by Git; packaging and publishing are separate steps. The local
-server streams files and rejects paths or symlinks that escape the export directory.
-
-Regression checks:
-
-```bash
-node --test tests/*.test.mjs packages/runtime/*.test.mjs godot-explorer/godot/web/preview.test.mjs godot-explorer/web/tools/{scene-comms,scene-gameplay,pulse}.test.mjs
-./build.sh test webgpu-frame-pacing
-./build.sh test webgpu-texture-roundtrip
-./build.sh test webgpu-buffer-coherence
-```
-
-Serve each exported fixture as its README describes and check its browser PASS result.
-In the editor, open **Preview → As a phone**, minimize/restore, capture the scene, then
-move it to a tab and rebuild the scene. Only one mobile runtime should run. Preview
-memory remains allocated while minimized; closing is necessary to release it.
-For the input regression, click the world, press Escape, then click a UI button.
-The first click must activate it without locking the pointer. Close the panel and
-repeat; drag the world to rotate the camera and drag the joystick to move. Check
-these steps both embedded and in a detached preview.
-Use [the scene UI fixture](tests/scene-ui-input/README.md) to check actual SDK UI
-callbacks, including the first press after startup, separately from client HUD buttons.
-
-## Continuous integration
-
-The `Mobile preview` workflow runs on pull requests and main pushes. It builds on macOS
-from the committed source trees, runs the protocol/export/server checks, and uploads the
-web export and graphics fixtures. A Linux job runs Chromium under Xvfb with Mesa and
-SwiftShader, requiring explicit PASS results for texture serialization, buffer coherence
-and frame pacing. It also requires a WebGPU renderer, completed GPU work and no engine/browser/GPU
-errors. Screenshots remain available as workflow artifacts. Hardware performance
-and native phone behavior still need device testing.
-
-The browser's Rust dependencies are checked against a freshly downloaded public OSV database
-without uploading the dependency inventory. Three maintenance-only notices are documented in
-`.github/osv-scanner.toml` and expire on November 15, 2026. Security findings fail the workflow;
-every source CI build runs this check before the package can be published.
-
-Checkout uses the repository's temporary GitHub token and does not persist it. No
-`GODOT_SOURCE_TOKEN` or coordinated source-repository pushes are needed. After the build,
-offline audit and browser assertions pass, CI prepares the npm tarball. Matching stable
-`vX.Y.Z` tags publish to npm with OIDC through the `production` environment; all other runs
-only validate. Consumers pin an npm version and need no private source token. Nothing
-deploys an application. See [trusted publisher setup](packages/runtime/README.md).
-
-## Keeping up with mobile
-
-Engine and explorer changes are committed together in this repository. The imported
-upstream revisions live in `upstreams.json`; browser modifications remain separate
-from the subtree import commits. The daily updater opens a draft PR when the mobile
-explorer changes, follows its expected engine revision, and starts validation. It
-does not merge or release automatically, and it leaves existing sync PRs for review.
+The daily updater tracks `decentraland/godot-explorer` on `main` and the matching
+engine revision on `decentraland/godotengine`'s `4.6.2` branch. It opens a draft PR
+and starts validation when updates are available. It never merges or releases.
+Conflicts and engine-version changes require review.
 
 ```sh
 git switch -c chore/update-mobile-upstreams
@@ -238,16 +60,97 @@ node scripts/upstream.mjs check
 node scripts/upstream.mjs sync
 ```
 
-See [upstream updates and conflict handling](docs/UPSTREAMS.md) and the
-[source migration and first release setup](docs/MIGRATION.md).
+Merge source-update PRs with a **merge commit** so the next update retains subtree
+metadata. See [upstream updates and conflict handling](docs/UPSTREAMS.md).
 
-For a local browser assertion after exporting a fixture:
+## Build locally
 
-```bash
+The build is tested on macOS with Apple Silicon. Install Xcode Command Line Tools,
+[Rust via rustup](https://rustup.rs), Python 3.10+, SCons and **Node.js 24+**.
+Use Chrome with WebGPU available. Allow substantial disk space and time for the
+first engine and Rust builds; they run with two jobs at background priority.
+
+```sh
+git clone https://github.com/dcl-regenesislabs/godot-web-preview.git
+cd godot-web-preview
+python3 -m pip install scons==4.11.1
+./build.sh emsdk engine native wasm preview
+```
+
+The build downloads Emscripten 4.0.11, the pinned Rust toolchains and the native
+Godot importer. It writes the preview to `godot-explorer/build/web/`. The engine
+uses WebGPU with a single-threaded WebAssembly runtime; scene JavaScript runs in
+Web Workers. Native deno/V8, voice and video dependencies are excluded from the
+browser build. The WebGPU driver originates from
+[dwalter/godotwebgpu](https://github.com/dwalter/godotwebgpu), with fixes included here.
+
+Pass the export's absolute path as `MOBILE_PREVIEW_EXPORT` to the editor's dev stack.
+The `preview` export leaves launch arguments to the host editor. For a standalone
+guest explorer after the initial build, use:
+
+```sh
+./build.sh export
+node godot-explorer/web/tools/serve-web.mjs godot-explorer/build/web 8060
+```
+
+Open `http://localhost:8060/` in Chrome. The standalone export uses the realm and
+location defaults in `build.sh`; `EXPLORER_ARGS` overrides them. Use `preview` again
+before packaging an editor runtime.
+
+| Changed files | Rebuild |
+| --- | --- |
+| Engine C++ | `./build.sh engine preview` |
+| Explorer Rust or scene-worker JavaScript | `./build.sh wasm preview` |
+| GDScript, HTML or assets | `./build.sh preview` |
+
+Do not commit generated binaries. See [developer build notes](CLAUDE.md) for
+compiler constraints and [the browser report](godot-explorer/web/REPORT.md) for
+historical measurements and remaining implementation gaps.
+
+## Validate
+
+Run the source and package tests:
+
+```sh
+node --test tests/*.test.mjs packages/runtime/*.test.mjs godot-explorer/godot/web/preview.test.mjs godot-explorer/web/tools/{scene-comms,scene-gameplay,pulse}.test.mjs
+node godotengine/webgpu_tests/driver_unit_tests/run_tests.mjs
+```
+
+After building, export and run a graphics regression:
+
+```sh
+./build.sh test webgpu-buffer-coherence
 npm ci --prefix godot-explorer/web/tools
+npx --prefix godot-explorer/web/tools playwright install chromium
 node godot-explorer/web/tools/run-web.mjs tests/webgpu-buffer-coherence/build 90 buffer.png --assert=bufferCoherenceResult
 ```
 
-The buffer fixture checks initial data, immediate CPU updates, clears/copies, and a buffer
-used first by a read-only compute shader and then by a writable shader. Before the
-coherence fix it reports stale data after both CPU updates and GPU writes.
+The [scene UI fixture](tests/scene-ui-input/README.md),
+[gameplay fixture](tests/scene-gameplay/README.md) and
+[scene-server fixture](tests/scene-comms/README.md) provide integration checks.
+In the editor, verify first-click UI actions, camera dragging, joystick movement,
+minimize/restore, screenshots, detaching and scene reload. Only one preview instance
+should run at a time.
+
+CI builds on macOS, checks engine algorithms and runtime protocols, audits browser
+dependencies, then runs texture, buffer and frame-pacing regressions in Linux
+Chromium with SwiftShader. Packaging waits for all three graphics checks. Workflow
+artifacts include the export, npm tarball and regression screenshots. Passing
+software-rendered graphics checks does not establish device performance.
+
+## npm releases
+
+Releases use [Decentraland's Oddish Action](https://github.com/decentraland/oddish-action)
+with npm OIDC trusted publishing and provenance. No npm token or
+`GODOT_SOURCE_TOKEN` is required. Editors consume the package; only this repository
+owns the runtime build and release workflow.
+
+The release tag must match `packages/runtime/package.json`: **`0.1.0`, without a
+`v` prefix**, for the first release. After build, audit and browser checks pass,
+the `production` job verifies the packaged assets and lets Oddish publish to
+`latest`. Main pushes, pull requests and manual validation runs do not publish.
+
+The npm package must first be bootstrapped and its trusted publisher configured
+for this repository, `preview.yml` and environment `production`. Configure release
+reviewers before publishing. See [package and OIDC setup](packages/runtime/README.md)
+and [migration and remaining setup](docs/MIGRATION.md).
