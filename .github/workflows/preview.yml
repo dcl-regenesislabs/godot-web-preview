@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['[0-9]*']
   workflow_dispatch:
 permissions:
   contents: read
@@ -98,20 +98,40 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   publish:
-    if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: package
     runs-on: ubuntu-latest
     environment: production
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: packages/runtime
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Install npm with OIDC dist-tag support
+        run: npm install --global npm@11.21.0
       - uses: actions/download-artifact@v4
         with:
           name: mobile-preview-npm
-      - run: npm publish ./dcl-regenesislabs-mobile-preview-runtime-*.tgz --access public --tag latest --provenance
+          path: release
+      - name: Verify the built package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node packages/runtime/scripts/check-release.mjs
+          tar -xzf release/dcl-regenesislabs-mobile-preview-runtime-*.tgz -C release
+          node release/package/scripts/check-dist.mjs
+      - name: Publish with Oddish
+        uses: decentraland/oddish-action@a4e98664bf53d4aae1f6d20d1a43ff2c79b555b3 # v1
+        with:
+          cwd: ./release/package
+          registry-url: https://registry.npmjs.org
+          access: public
+          provenance: true
