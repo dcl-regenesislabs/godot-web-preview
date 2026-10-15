@@ -1,0 +1,53 @@
+name: 📊 Static Checks
+on:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.actor }}-${{ github.head_ref || github.run_number }}-${{ github.ref }}-static
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Code style and file formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # @stable
+        with:
+          toolchain: "1.90"
+          components: rustfmt
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install gdtoolkit 4
+        run: pip3 install git+https://github.com/dcl-regenesislabs/godot-gdscript-toolkit.git
+
+      - name: Check format GDScript
+        run: gdformat -d godot/
+
+      - name: GDScript Linter
+        run: gdlint godot/
+
+      - name: cargo fmt
+        working-directory: lib
+        run: cargo fmt --all -- --check
+
+      - name: i18n tooling unit tests
+        run: python3 -m unittest discover -s tools/i18n -p 'test_*.py'
+
+      - name: Check translation catalogues
+        run: python3 tools/i18n/format_csv.py --check
+
+      - name: Check UI strings are keyed
+        run: python3 tools/i18n/extract_strings.py --check
+
+      - name: WebSocket JS shim unit tests
+        run: node --test lib/src/dcl/js/js_modules/ws.test.cjs

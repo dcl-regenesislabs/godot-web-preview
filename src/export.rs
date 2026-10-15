@@ -1,0 +1,1008 @@
+use std::{
+    collections::HashMap,
+    fs,
+    io::{self, BufRead, BufReader, Write},
+    path::Path,
+    process::{ExitStatus, Stdio},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+};
+use zip::ZipArchive;
+
+use crate::{
+    consts::{
+        godot_release_tag, godot_templates_base_url, godot_templates_base_url_for_branch,
+        sanitize_branch_for_url, EXPORTS_FOLDER, GODOT_BUILD_SHA, GODOT_CURRENT_VERSION,
+        GODOT_PLATFORM_FILES, GODOT_PROJECT_FOLDER, GODOT_USE_BRANCH,
+    },
+    helpers::get_exe_extension,
+    install_dependency::{
+        download_and_extract_zip, godot_export_templates_path, set_executable_permission,
+    },
+    path::{adjust_canonicalization, get_godot_path},
+    platform::validate_platform_for_target,
+    ui::{create_spinner, print_message, print_section, MessageType},
+};
+
+use walkdir::WalkDir;
+
+/// Strips debug symbols from iOS static libraries (.a files) inside ios.zip to reduce size.
+/// This extracts the zip, strips the libraries, and re-compresses it.
+/// This is only run on macOS since iOS templates are only used there.
+#[cfg(target_os = "macos")]
+fn strip_ios_template_symbols(templates_path: &str) -> Result<(), anyhow::Error> {
+    use zip::write::FileOptions;
+
+    let ios_zip_path = Path::new(templates_path).join("ios.zip");
+
+    if !ios_zip_path.exists() {
+        print_message(
+            MessageType::Warning,
+            &format!("iOS template not found at: {}", ios_zip_path.display()),
+        );
+        return Ok(());
+    }
+
+    let size_before = fs::metadata(&ios_zip_path).map(|m| m.len()).unwrap_or(0);
+    let size_before_mb = size_before as f64 / (1024.0 * 1024.0);
+
+    // Check if already stripped (assume >1GB means not stripped)
+    const MIN_UNSTRIPPED_SIZE_MB: f64 = 1024.0; // 1 GB
+    if size_before_mb < MIN_UNSTRIPPED_SIZE_MB {
+        print_message(
+            MessageType::Info,
+            &format!(
+                "iOS template size is {:.1} MB (<{:.0} MB), appears already stripped. Skipping.",
+                size_before_mb, MIN_UNSTRIPPED_SIZE_MB
+            ),
+        );
+        return Ok(());
+    }
+
+    print_message(
+        MessageType::Info,
+        &format!("iOS template size before: {:.1} MB", size_before_mb),
+    );
+
+    // Create a temporary directory for extraction
+    let temp_dir = Path::new(templates_path).join("ios_temp");
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir)?;
+    }
+    fs::create_dir_all(&temp_dir)?;
+
+    // Extract the zip
+    let spinner = create_spinner("Extracting iOS template...");
+    let file = fs::File::open(&ios_zip_path)?;
+    let mut archive = ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let outpath = temp_dir.join(file.mangled_name());
+
+        if file.is_dir() {
+            fs::create_dir_all(&outpath)?;
+        } else {
+            if let Some(parent) = outpath.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut outfile = fs::File::create(&outpath)?;
+            io::copy(&mut file, &mut outfile)?;
+        }
+    }
+    spinner.finish_and_clear();
+
+    // Strip the .a files
+    let spinner = create_spinner("Stripping debug symbols...");
+    let mut stripped_count = 0;
+
+    for entry in WalkDir::new(&temp_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "a") && e.file_type().is_file())
+    {
+        let path = entry.path();
+
+        // Run strip -S to remove debug symbols (keeps symbol table for linking)
+        let status = std::process::Command::new("strip")
+            .args(["-S", path.to_str().unwrap()])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                stripped_count += 1;
+            }
+            Ok(s) => {
+                print_message(
+                    MessageType::Warning,
+                    &format!(
+                        "strip command failed for {}: exit code {:?}",
+                        path.display(),
+                        s.code()
+                    ),
+                );
+            }
+            Err(e) => {
+                print_message(
+                    MessageType::Warning,
+                    &format!("Failed to run strip on {}: {}", path.display(), e),
+                );
+            }
+        }
+    }
+    spinner.finish_and_clear();
+
+    print_message(
+        MessageType::Info,
+        &format!("Stripped {} static libraries", stripped_count),
+    );
+
+    // Re-compress the zip
+    let spinner = create_spinner("Re-compressing iOS template...");
+    let new_zip_path = Path::new(templates_path).join("ios_new.zip");
+    let new_zip_file = fs::File::create(&new_zip_path)?;
+    let mut zip_writer = zip::ZipWriter::new(new_zip_file);
+
+    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    for entry in WalkDir::new(&temp_dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let relative_path = path.strip_prefix(&temp_dir)?;
+
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        if path.is_dir() {
+            let dir_name = format!("{}/", relative_path.display());
+            zip_writer.add_directory(&dir_name, options)?;
+        } else {
+            let file_name = relative_path.to_string_lossy().to_string();
+            zip_writer.start_file(&file_name, options)?;
+            let mut file = fs::File::open(path)?;
+            io::copy(&mut file, &mut zip_writer)?;
+        }
+    }
+
+    zip_writer.finish()?;
+    spinner.finish_and_clear();
+
+    // Replace the original zip with the new one
+    fs::remove_file(&ios_zip_path)?;
+    fs::rename(&new_zip_path, &ios_zip_path)?;
+
+    // Clean up temp directory
+    fs::remove_dir_all(&temp_dir)?;
+
+    let size_after = fs::metadata(&ios_zip_path).map(|m| m.len()).unwrap_or(0);
+    let size_after_mb = size_after as f64 / (1024.0 * 1024.0);
+    let saved_mb = (size_before as f64 - size_after as f64) / (1024.0 * 1024.0);
+
+    print_message(
+        MessageType::Success,
+        &format!(
+            "iOS template size after: {:.1} MB (saved {:.1} MB)",
+            size_after_mb, saved_mb
+        ),
+    );
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn strip_ios_template_symbols(_templates_path: &str) -> Result<(), anyhow::Error> {
+    // iOS templates are only used on macOS, no-op on other platforms
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    fs::create_dir_all(&dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn get_target_os(target: Option<&str>) -> anyhow::Result<String> {
+    let target = if let Some(t) = target {
+        let t = t.to_lowercase();
+        match t.as_str() {
+            "ios" => {
+                // iOS can only be compiled from macOS
+                if std::env::consts::OS != "macos" {
+                    return Err(anyhow::anyhow!(
+                        "iOS builds are only supported on macOS hosts"
+                    ));
+                }
+                "ios".to_string()
+            }
+            "android" => {
+                // Android can usually be built from multiple platforms assuming you have the correct export templates
+                "android".to_string()
+            }
+            "quest" => {
+                // Quest is essentially Android with specific settings
+                "quest".to_string()
+            }
+            "linux" | "win64" | "macos" => t.to_string(),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported provided target: {}. Supported targets: ios, android, quest, linux, win64, macos.",
+                    t
+                ));
+            }
+        }
+    } else {
+        // Fallback to host OS
+        match std::env::consts::OS {
+            "linux" => "linux".to_string(),
+            "windows" => "win64".to_string(),
+            "macos" => "macos".to_string(),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported platform for exporting: {}",
+                    std::env::consts::OS
+                ));
+            }
+        }
+    };
+
+    Ok(target)
+}
+
+pub fn import_assets() -> ExitStatus {
+    let program = get_godot_path();
+
+    // Do imports and one project open
+    let args = vec![
+        "--editor",
+        "--import",
+        "--headless",
+        "--rendering-driver",
+        "opengl3",
+    ];
+
+    println!("execute ${program} {:?}", args);
+    std::process::Command::new(program.as_str())
+        .args(&args)
+        .current_dir(adjust_canonicalization(
+            std::fs::canonicalize(GODOT_PROJECT_FOLDER).unwrap(),
+        ))
+        .status()
+        .expect("Failed to run Godot")
+}
+
+/// Printed once by Godot's Metal shader container when `xcrun metal` is unavailable on the exporting
+/// machine: the baker then stores SPIR-V only and the device still compiles every shader from source.
+const SHADER_BAKER_SPIRV_ONLY_WARNING: &str = "Metal shader baking limited to SPIR-V";
+/// Progress line the shader baker prints when it starts compiling
+/// (`ShaderBakerExportPlugin::_end_customize_resources`):
+/// `[ 0% ] baking_shaders | Started Baking shaders (597 steps)`. It only appears when the baker is
+/// active, which `_is_active()` refuses without a RenderingDevice renderer (headless / opengl3).
+const SHADER_BAKER_STARTED: &str = "Started Baking shaders (";
+/// Every shader the baker compiles is added to the pack as
+/// `res://.godot/shader_cache/<ShaderRD>/<hash>/<hash>.metal.cache` (a `Storing File:` progress line);
+/// the on-disk copy lives in `godot/.godot/exported/<hash>/shader_baker/iOS/metal/`, not next to the IPA.
+const SHADER_BAKER_METAL_CACHE_SUFFIX: &str = ".metal.cache";
+
+/// What Godot's export output said about the shader bake.
+#[derive(Debug, Default)]
+struct GodotExportOutput {
+    /// Shader variants the baker queued (`Started Baking shaders (N steps)`); `None` when it never ran.
+    bake_steps: Option<u32>,
+    /// `.metal.cache` files stored into the .pck.
+    metal_caches_packed: usize,
+    /// The baker ran without the Metal toolchain and stored SPIR-V only.
+    spirv_only_warning: bool,
+}
+
+/// Runs Godot forwarding its stdout/stderr line by line while scanning both streams for the shader
+/// baker's progress and warnings. Piping (instead of inheriting) stdio is what lets the iOS export
+/// detect a missing or degraded shader bake without losing the live output.
+/// Thread-shared accumulator for [`scan_line`].
+#[derive(Default)]
+struct ExportOutputScan {
+    bake_started: AtomicBool,
+    bake_steps: AtomicU32,
+    metal_caches_packed: AtomicUsize,
+    spirv_only_warning: AtomicBool,
+}
+
+impl ExportOutputScan {
+    fn finish(&self) -> GodotExportOutput {
+        GodotExportOutput {
+            bake_steps: self
+                .bake_started
+                .load(Ordering::Relaxed)
+                .then(|| self.bake_steps.load(Ordering::Relaxed)),
+            metal_caches_packed: self.metal_caches_packed.load(Ordering::Relaxed),
+            spirv_only_warning: self.spirv_only_warning.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Inspects one line of Godot's export output (ANSI colour codes included) for the shader baker's
+/// progress and warnings.
+fn scan_line(line: &str, scan: &ExportOutputScan) {
+    if line.contains(SHADER_BAKER_SPIRV_ONLY_WARNING) {
+        scan.spirv_only_warning.store(true, Ordering::Relaxed);
+    }
+    if let Some(rest) = line.split(SHADER_BAKER_STARTED).nth(1) {
+        let steps = rest
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|digits| digits.parse::<u32>().ok())
+            .unwrap_or(0);
+        scan.bake_steps.store(steps, Ordering::Relaxed);
+        scan.bake_started.store(true, Ordering::Relaxed);
+    }
+    if line.contains("Storing File:") && line.contains(SHADER_BAKER_METAL_CACHE_SUFFIX) {
+        scan.metal_caches_packed.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn run_godot_streaming(
+    command: &mut std::process::Command,
+) -> io::Result<(ExitStatus, GodotExportOutput)> {
+    fn pump<R, W>(reader: R, mut writer: W, scan: Arc<ExportOutputScan>) -> thread::JoinHandle<()>
+    where
+        R: io::Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        thread::spawn(move || {
+            for line in BufReader::new(reader).lines().map_while(Result::ok) {
+                scan_line(&line, &scan);
+                let _ = writeln!(writer, "{line}");
+            }
+        })
+    }
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let scan = Arc::new(ExportOutputScan::default());
+    let stdout_pump = child
+        .stdout
+        .take()
+        .map(|s| pump(s, io::stdout(), Arc::clone(&scan)));
+    let stderr_pump = child
+        .stderr
+        .take()
+        .map(|s| pump(s, io::stderr(), Arc::clone(&scan)));
+    let status = child.wait()?;
+    for handle in [stdout_pump, stderr_pump].into_iter().flatten() {
+        let _ = handle.join();
+    }
+    Ok((status, scan.finish()))
+}
+
+/// Fails the iOS export unless Godot's own output proves the shader bake happened: the baker
+/// announced `Started Baking shaders (N steps)`, `.metal.cache` files were packed, and the SPIR-V-only
+/// warning (no Metal toolchain) never appeared. In every failing case the device would compile each
+/// shader on its main thread at first draw, which is the App Hang this check exists to prevent.
+/// `DCL_SKIP_SHADER_BAKE_CHECK=1` exports anyway (local debugging only — never for a store build).
+fn verify_shader_bake_output(output: &GodotExportOutput) -> Result<(), anyhow::Error> {
+    if std::env::var_os("DCL_SKIP_SHADER_BAKE_CHECK").is_some() {
+        print_message(
+            MessageType::Warning,
+            &format!(
+                "DCL_SKIP_SHADER_BAKE_CHECK set — not verifying the shader bake (baker steps: {:?}, {} files packed: {}, metal toolchain warning: {}).",
+                output.bake_steps,
+                SHADER_BAKER_METAL_CACHE_SUFFIX,
+                output.metal_caches_packed,
+                output.spirv_only_warning
+            ),
+        );
+        return Ok(());
+    }
+
+    let steps = output.bake_steps.unwrap_or(0);
+    if steps == 0 {
+        return Err(anyhow::anyhow!(
+            "Shader baker never ran (Godot printed no \"{}N steps)\" progress) — the export ran without a \
+             RenderingDevice renderer (headless / opengl3) or the preset has shader_baker/enabled=false, \
+             so every shader would compile on the device at first draw. Run the export on a machine with \
+             a display, or set DCL_SKIP_SHADER_BAKE_CHECK=1 to ship without baked shaders.",
+            SHADER_BAKER_STARTED
+        ));
+    }
+    if output.spirv_only_warning {
+        return Err(anyhow::anyhow!(
+            "Shader baker could not compile Metal libraries (Godot printed \"{}\"): the Metal toolchain is \
+             missing on this machine. Install it with `xcodebuild -downloadComponent MetalToolchain` \
+             (Xcode 26) and re-run, or set DCL_SKIP_SHADER_BAKE_CHECK=1 to ship SPIR-V only.",
+            SHADER_BAKER_SPIRV_ONLY_WARNING
+        ));
+    }
+    if output.metal_caches_packed == 0 {
+        return Err(anyhow::anyhow!(
+            "Shader baker queued {} variants but the export packed no {} file — look for \"Failed to \
+             compile code to native\" in the Godot output above, or set DCL_SKIP_SHADER_BAKE_CHECK=1 to \
+             ship without baked shaders.",
+            steps,
+            SHADER_BAKER_METAL_CACHE_SUFFIX
+        ));
+    }
+    print_message(
+        MessageType::Success,
+        &format!(
+            "Shader baker: {} variants compiled, {} {} files packed into the .pck",
+            steps, output.metal_caches_packed, SHADER_BAKER_METAL_CACHE_SUFFIX
+        ),
+    );
+    Ok(())
+}
+
+pub fn export(
+    target: Option<&str>,
+    format: &str,
+    release: bool,
+    build_number: Option<u64>,
+) -> Result<(), anyhow::Error> {
+    print_section("Exporting Project");
+
+    crate::install_dependency::warn_if_godot_mismatch();
+    let program = get_godot_path();
+
+    // Make exports directory if it doesn't exist
+    if !std::path::Path::new(EXPORTS_FOLDER).exists() {
+        fs::create_dir(EXPORTS_FOLDER)?;
+    }
+
+    // Do imports and one project open
+    let import_assets_status = import_assets();
+
+    // Determine final target if not specified
+    let target = get_target_os(target)?;
+
+    // Validate platform requirements
+    validate_platform_for_target(&target)?;
+
+    print_message(MessageType::Info, &format!("Target platform: {}", target));
+
+    // Extract Android template if needed
+    if target == "android" || target == "quest" {
+        extract_android_template()?;
+    }
+
+    // Determine output file name
+    let exe_ext = get_exe_extension(&target);
+    let output_file_name = match target.as_str() {
+        "linux" => "decentraland.godot.client.x86_64".to_string(),
+        "win64" => format!("decentraland.godot.client{}", exe_ext),
+        "macos" => "decentraland.godot.client.dmg".to_string(),
+        "ios" => "decentraland-godot-client.ipa".to_string(),
+        "android" => {
+            if format == "aab" {
+                "decentraland.godot.client.aab".to_string()
+            } else {
+                "decentraland.godot.client.apk".to_string()
+            }
+        }
+        "quest" => {
+            if format == "aab" {
+                "meta-quest.aab".to_string()
+            } else {
+                "meta-quest.apk".to_string()
+            }
+        }
+        _ => return Err(anyhow::anyhow!("Unexpected final target: {}", target)),
+    };
+
+    let output_rel_path = format!("{EXPORTS_FOLDER}{output_file_name}");
+    if std::path::Path::new(output_rel_path.as_str()).exists() {
+        fs::remove_file(output_rel_path.as_str())?;
+    }
+
+    // Adjust the output path parameter for Godot command line
+    // This should reflect the correct relative path from the Godot project directory
+    let output_path_godot_param = format!("./../exports/{output_file_name}");
+
+    // Store targets get the build number (Android versionCode / iOS CFBundleVersion) stamped
+    // into export_presets.cfg at export time, then restored afterward so the working tree keeps
+    // its committed placeholder values. AAB additionally needs format/architecture/signing tweaks.
+    let is_store_target = matches!(target.as_str(), "android" | "quest" | "ios");
+    let aab_tweaks = (target == "android" || target == "quest") && format == "aab";
+    // Resolve the build number: `--build-number` wins, otherwise the `DCL_BUILD_NUMBER` env var
+    // (set in CI by the Cloudflare allocator, idempotent per commit SHA). When neither is present
+    // (local / fork builds) the committed placeholder in export_presets.cfg is kept as-is — those
+    // builds are never shipped to a store.
+    let build_number = build_number.or_else(|| {
+        std::env::var("DCL_BUILD_NUMBER")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    });
+    let export_presets_backup = if is_store_target && (build_number.is_some() || aab_tweaks) {
+        if let Some(build_number) = build_number {
+            print_message(
+                MessageType::Info,
+                &format!("Build number (versionCode / CFBundleVersion): {build_number}"),
+            );
+        }
+        Some(patch_export_presets_for_store(build_number, aab_tweaks)?)
+    } else {
+        None
+    };
+
+    let export_mode = if release {
+        "--export-release"
+    } else {
+        "--export-debug"
+    };
+
+    // Shader baking (`shader_baker/enabled` in export_presets.cfg) only happens when the exporting
+    // editor itself runs a RenderingDevice renderer: `ShaderBakerExportPlugin::_is_active()` returns
+    // false — without printing anything — under `--headless` (dummy renderer) or
+    // `--rendering-driver opengl3`. The iOS preset has had baking enabled while every store build
+    // shipped without baked shaders, so each Metal shader was compiled from source on the device's
+    // main thread at first draw (5–130 s App Hangs on ~80% of iOS users on 1.13.1). Export iOS through
+    // a windowed editor on the host's default RenderingDevice driver (Metal on Apple Silicon), forcing
+    // the mobile renderer so the baked variants match the device. Every other target keeps the
+    // headless export.
+    let bake_shaders = target == "ios";
+    let mut args: Vec<&str> = vec!["-e"];
+    if bake_shaders {
+        args.extend(["--rendering-method", "mobile"]);
+    } else {
+        args.extend(["--rendering-driver", "opengl3", "--headless"]);
+    }
+    args.extend([
+        export_mode,
+        target.as_str(),
+        output_path_godot_param.as_str(),
+    ]);
+
+    // The headless Godot editor dlopen's the GDExtension (libdclgodot.dylib) to run the
+    // export. A freshly rebuilt dylib carries an invalid signature, so macOS SIGKILLs Godot
+    // at load time and the export silently produces NOTHING — leaving a stale .pck that the
+    // rest of the pipeline happily reuses (so local GDScript changes never ship). Re-sign it
+    // ad-hoc right before exporting so the editor can load it.
+    #[cfg(target_os = "macos")]
+    {
+        let macos_dylib = "lib/target/libdclgodot_macos/libdclgodot.dylib";
+        if std::path::Path::new(macos_dylib).exists() {
+            print_message(
+                MessageType::Step,
+                "Ad-hoc signing libdclgodot.dylib (macOS) for the headless export...",
+            );
+            let _ = std::process::Command::new("codesign")
+                .args(["--force", "--sign", "-", macos_dylib])
+                .status();
+        }
+    }
+
+    print_message(MessageType::Step, "Running Godot export...");
+    let spinner = create_spinner("Exporting project...");
+
+    let mut export_command = std::process::Command::new(program.as_str());
+    export_command.args(&args);
+    export_command.current_dir(adjust_canonicalization(
+        std::fs::canonicalize(GODOT_PROJECT_FOLDER).unwrap(),
+    ));
+
+    // Set Android keystore environment variables if exporting for Android/Quest
+    if target == "android" || target == "quest" {
+        let keystore_type = if release { "release" } else { "debug" };
+
+        // Generate keystore if it doesn't exist
+        let keystore_path = crate::keystore::generate_keystore(keystore_type)?;
+        let keystore_abs_path = std::fs::canonicalize(keystore_path)?;
+
+        print_message(
+            MessageType::Info,
+            &format!("Using keystore: {}", keystore_abs_path.display()),
+        );
+
+        let (keystore_user, keystore_password) =
+            crate::keystore::get_keystore_credentials(keystore_type);
+        let env_prefix = format!("GODOT_ANDROID_KEYSTORE_{}", keystore_type.to_uppercase());
+
+        export_command.env(format!("{}_PATH", env_prefix), keystore_abs_path);
+        export_command.env(format!("{}_USER", env_prefix), keystore_user);
+        export_command.env(format!("{}_PASSWORD", env_prefix), keystore_password);
+    }
+
+    let (export_status, godot_output) =
+        run_godot_streaming(&mut export_command).expect("Failed to run Godot");
+
+    spinner.finish();
+
+    // Restore export presets if we backed them up
+    if let Some(backup_content) = export_presets_backup {
+        restore_export_presets(backup_content)?;
+    }
+
+    if bake_shaders {
+        verify_shader_bake_output(&godot_output)?;
+    }
+
+    if !std::path::Path::new(output_rel_path.as_str()).exists() && target != "ios" {
+        print_message(MessageType::Error, "Export failed. Common issues:");
+        print_message(
+            MessageType::Info,
+            "- Missing export templates (run: cargo run -- install --targets <platform>)",
+        );
+        print_message(
+            MessageType::Info,
+            "- Invalid export preset in project.godot",
+        );
+        print_message(
+            MessageType::Info,
+            "- Missing platform-specific dependencies",
+        );
+        return Err(anyhow::anyhow!(
+            "Output file was not generated. pre-import godot status: {:?}, project-export godot status: {:?}",
+            import_assets_status,
+            export_status
+        ));
+    }
+
+    // Set executable permission on Linux
+    if target == "linux" {
+        set_executable_permission(Path::new(output_rel_path.as_str()))?;
+    }
+
+    print_message(
+        MessageType::Success,
+        &format!("Export completed: {}", output_rel_path),
+    );
+
+    Ok(())
+}
+
+pub fn prepare_templates(
+    platforms: &[String],
+    use_cache: bool,
+    strip_ios: bool,
+    branch: Option<&str>,
+) -> Result<(), anyhow::Error> {
+    // Convert GODOT_PLATFORM_FILES into a HashMap
+    let file_map: HashMap<&str, Vec<&str>> = GODOT_PLATFORM_FILES
+        .iter()
+        .map(|(platform, files)| (*platform, files.to_vec()))
+        .collect();
+
+    // If no specific templates are provided, default to all templates
+    let templates = if platforms.is_empty() {
+        println!("No specific templates provided, downloading all templates.");
+        println!(
+            "For downloading for a specific platform use: `cargo run -- install --targets linux`"
+        );
+        file_map
+            .keys()
+            .map(|&k| k.to_string())
+            .collect::<Vec<String>>()
+    } else {
+        platforms.to_vec()
+    };
+
+    // Process each template and download the associated files
+    let dest_path = godot_export_templates_path().expect("Failed to get template path");
+
+    // Helper: only pass cache key when --cache is enabled
+    let cache_key = |key: String| -> Option<String> {
+        if use_cache {
+            Some(key)
+        } else {
+            None
+        }
+    };
+
+    // Effective branch = explicit `--branch` (takes precedence) or the `GODOT_USE_BRANCH` override.
+    // Drives the marker-skip guard, cache key and marker stamp so a branch build is never skipped as
+    // if it were the pinned stable release. The download URL itself resolves the same override inside
+    // godot_templates_base_url() below.
+    let effective_branch = branch.or(GODOT_USE_BRANCH);
+
+    let templates_base_url = match branch {
+        Some(b) => godot_templates_base_url_for_branch(b),
+        None => godot_templates_base_url(),
+    };
+
+    let expected_tag = godot_release_tag();
+    for template in &templates {
+        if let Some(files) = file_map.get(template.as_str()) {
+            // Skip-guard: on a non-branch install, if our per-platform SHA marker matches the
+            // expected release tag AND every template file is present, the (potentially multi-GB —
+            // iOS `ios.zip` ≈ 2 GB) download + re-extract is redundant, so skip it entirely. Godot's
+            // own `version.txt` only carries the version (no SHA), hence our own marker. Branch
+            // builds are never marked/skipped (their fork SHA isn't tracked at const time).
+            let marker = Path::new(&dest_path).join(format!(".dcl_build_sha_{template}"));
+            let marker_ok = effective_branch.is_none()
+                && fs::read_to_string(&marker)
+                    .map(|s| s.trim() == expected_tag)
+                    .unwrap_or(false);
+            let all_present = files.iter().all(|f| Path::new(&dest_path).join(f).exists());
+            if marker_ok && all_present {
+                print_message(
+                    MessageType::Info,
+                    &format!("{template} templates already at {expected_tag} — skipping download"),
+                );
+                continue;
+            }
+
+            for file in files {
+                println!("Downloading file for {}: {}", template, file);
+
+                let url = format!("{}{}.zip", templates_base_url, file);
+                let cache_id = match effective_branch {
+                    Some(b) => format!(
+                        "{GODOT_CURRENT_VERSION}.branch-{}.{file}.export-templates.zip",
+                        sanitize_branch_for_url(b)
+                    ),
+                    None => format!(
+                        "{GODOT_CURRENT_VERSION}-{GODOT_BUILD_SHA}.{file}.export-templates.zip"
+                    ),
+                };
+                download_and_extract_zip(url.as_str(), dest_path.as_str(), cache_key(cache_id))?;
+            }
+            // Stamp the SHA marker after a successful extract so the next run can skip.
+            // Skipped for branch builds (their fork SHA isn't tracked at const time).
+            if effective_branch.is_none() {
+                let _ = fs::write(&marker, &expected_tag);
+            }
+        } else {
+            println!("No files mapped for template: {}", template);
+        }
+    }
+
+    // Strip iOS templates only if --strip-ios is specified
+    if templates.iter().any(|t| t == "ios") && strip_ios {
+        strip_ios_template_symbols(&dest_path)?;
+    } else if templates.iter().any(|t| t == "ios") && !strip_ios {
+        print_message(
+            MessageType::Info,
+            "Keeping iOS debug symbols (use --strip-ios to strip them and save disk space)",
+        );
+    }
+
+    Ok(())
+}
+
+/// Strips debug symbols from already-installed iOS templates.
+/// This can be run standalone via `cargo run -- strip-ios-templates`
+pub fn strip_ios_templates() -> Result<(), anyhow::Error> {
+    print_section("Stripping iOS Templates");
+
+    let dest_path = godot_export_templates_path().expect("Failed to get template path");
+    strip_ios_template_symbols(&dest_path)?;
+
+    Ok(())
+}
+
+/// Patch `export_presets.cfg` for a store export and return the original content so the caller can
+/// restore it afterward. When `build_number` is `Some`, rewrites the build-number fields (Android
+/// `version/code`, iOS `application/version`); when `None` the committed placeholder is kept. When
+/// `aab` is set, also flips the AAB-specific format/architecture/signing flags. The marketing
+/// strings (`version/name`, `application/short_version`) are left as committed — the SemVer source
+/// of truth.
+fn patch_export_presets_for_store(
+    build_number: Option<u64>,
+    aab: bool,
+) -> Result<String, anyhow::Error> {
+    let export_presets_path = format!("{}/export_presets.cfg", GODOT_PROJECT_FOLDER);
+    let original_content = fs::read_to_string(&export_presets_path)?;
+
+    let mut updated = original_content.clone();
+    if let Some(build_number) = build_number {
+        // Robust line-prefix rewrite (not literal `.replace`, which breaks once the value isn't 72).
+        updated = rewrite_cfg_value(&updated, "version/code=", &build_number.to_string());
+        updated = rewrite_cfg_value(
+            &updated,
+            "application/version=",
+            &format!("\"{build_number}\""),
+        );
+    }
+
+    if aab {
+        updated = updated
+            .replace(
+                "gradle_build/export_format=0",
+                "gradle_build/export_format=1",
+            )
+            .replace("architectures/x86_64=true", "architectures/x86_64=false")
+            .replace("package/signed=true", "package/signed=false");
+    }
+
+    fs::write(&export_presets_path, updated)?;
+    Ok(original_content)
+}
+
+/// Replace the value of every line starting with `prefix` (ignoring leading whitespace) with
+/// `{prefix}{new_value}`, preserving indentation and any trailing newline.
+fn rewrite_cfg_value(content: &str, prefix: &str, new_value: &str) -> String {
+    let trailing_newline = content.ends_with('\n');
+    let mut out = content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with(prefix) {
+                let indent = &line[..line.len() - trimmed.len()];
+                format!("{indent}{prefix}{new_value}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if trailing_newline {
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod build_number_patch_tests {
+    use super::rewrite_cfg_value;
+
+    #[test]
+    fn rewrites_android_value_preserving_others_and_trailing_newline() {
+        let cfg = "version/code=72\nversion/name=\"1.10.0\"\napplication/version=\"72\"\n";
+        let out = rewrite_cfg_value(cfg, "version/code=", "236786399");
+        assert_eq!(
+            out,
+            "version/code=236786399\nversion/name=\"1.10.0\"\napplication/version=\"72\"\n"
+        );
+    }
+
+    #[test]
+    fn ios_version_does_not_clobber_short_version() {
+        // `application/version=` must NOT match `application/short_version=`.
+        let cfg = "application/short_version=\"1.10.0\"\napplication/version=\"72\"";
+        let out = rewrite_cfg_value(cfg, "application/version=", "\"236786399\"");
+        assert_eq!(
+            out,
+            "application/short_version=\"1.10.0\"\napplication/version=\"236786399\""
+        );
+    }
+
+    #[test]
+    fn no_match_is_identity() {
+        let cfg = "a=1\nb=2\n";
+        assert_eq!(rewrite_cfg_value(cfg, "c=", "9"), cfg);
+    }
+}
+
+fn restore_export_presets(original_content: String) -> Result<(), anyhow::Error> {
+    let export_presets_path = format!("{}/export_presets.cfg", GODOT_PROJECT_FOLDER);
+    fs::write(export_presets_path, original_content)?;
+    Ok(())
+}
+
+fn extract_android_template() -> Result<(), anyhow::Error> {
+    let android_build_dir = format!("{}/android/", GODOT_PROJECT_FOLDER);
+    let android_build_path = Path::new(&android_build_dir);
+
+    // Check if already extracted
+    if android_build_path.exists() {
+        print_message(MessageType::Info, "Android template already extracted");
+        return Ok(());
+    }
+
+    print_message(MessageType::Step, "Extracting Android template...");
+
+    // Get the template path
+    let templates_path = godot_export_templates_path()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine export templates path"))?;
+
+    let android_source_zip = format!("{}/android_source.zip", templates_path);
+    let android_source_path = Path::new(&android_source_zip);
+
+    if !android_source_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Android template not found at: {}. Run 'cargo run -- install --targets android' first",
+            android_source_zip
+        ));
+    }
+
+    // Create directories
+    fs::create_dir_all(&android_build_dir)?;
+    let build_dir = format!("{}/build", android_build_dir);
+    fs::create_dir_all(&build_dir)?;
+
+    // Extract the template
+    let file = fs::File::open(android_source_path)?;
+    let mut archive = ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let outpath = Path::new(&build_dir).join(file.mangled_name());
+
+        if file.is_dir() {
+            fs::create_dir_all(&outpath)?;
+        } else {
+            if let Some(parent) = outpath.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut outfile = fs::File::create(&outpath)?;
+            io::copy(&mut file, &mut outfile)?;
+        }
+    }
+
+    // Create version file
+    let version_file = format!("{}/.build_version", android_build_dir);
+    fs::write(version_file, format!("{}.stable", GODOT_CURRENT_VERSION))?;
+
+    // Create .gdignore file
+    let gdignore_file = format!("{}/build/.gdignore", android_build_dir);
+    fs::write(gdignore_file, "")?;
+
+    // Set executable permission on gradlew
+    let gradlew_path = format!("{}/build/gradlew", android_build_dir);
+    if Path::new(&gradlew_path).exists() {
+        set_executable_permission(Path::new(&gradlew_path))?;
+        print_message(MessageType::Info, "Set executable permission on gradlew");
+    }
+
+    print_message(
+        MessageType::Success,
+        "Android template extracted successfully",
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod shader_bake_scan_tests {
+    use super::*;
+
+    fn scan(lines: &[&str]) -> GodotExportOutput {
+        let scan = ExportOutputScan::default();
+        for line in lines {
+            scan_line(line, &scan);
+        }
+        scan.finish()
+    }
+
+    /// Lines copied from the iOS export log of CI job 103621828160 (PR #2886).
+    #[test]
+    fn detects_a_successful_bake_from_godot_progress_lines() {
+        let out = scan(&[
+            "Metal 4.0 - Forward Mobile - Using Device #0: Apple - Apple Paravirtual device (Apple5)",
+            "[   0% ] \u{1b}[90m\u{1b}[1mbaking_shaders\u{1b}[22m | Started Baking shaders (597 steps)\u{1b}[39m\u{1b}[0m",
+            "[  71% ] \u{1b}[90m\u{1b}[1mbaking_shaders\u{1b}[22m | Baking...\u{1b}[39m\u{1b}[0m",
+            "\u{1b}[92m[ DONE ]\u{1b}[39m \u{1b}[1mbaking_shaders\u{1b}[22m",
+            "[   1% ] \u{1b}[90m\u{1b}[1msavepack\u{1b}[22m | Storing File: res://.godot/shader_cache/CanvasSdfShaderRD/03d3d9d3cd52add64ff8ff8bb13fe3925448aa012f2c0c0de1703ddde02b1df7/087916079fba7c625e62b0c2cca570e0fb87c99a.metal.cache\u{1b}[39m\u{1b}[0m",
+            "[   1% ] \u{1b}[90m\u{1b}[1msavepack\u{1b}[22m | Storing File: res://.godot/shader_cache/SkyShaderRD/b5fd09bdcc7d7b66ec490ecb2fdd248bc1bef95db12d57eb2a28589fa601c308/de678811d1bad3cad4892a8db7b6ea0be197d51d.metal.cache\u{1b}[39m\u{1b}[0m",
+            "[   4% ] \u{1b}[90m\u{1b}[1msavepack\u{1b}[22m | Storing File: res://assets/avatar/dcl_toon.gdshader\u{1b}[39m\u{1b}[0m",
+        ]);
+        assert_eq!(out.bake_steps, Some(597));
+        assert_eq!(out.metal_caches_packed, 2);
+        assert!(!out.spirv_only_warning);
+        assert!(verify_shader_bake_output(&out).is_ok());
+    }
+
+    /// The 1.13.1 export (headless, opengl3): the baker never started, the .pck only got .gdshader sources.
+    #[test]
+    fn rejects_an_export_where_the_baker_never_ran() {
+        let out = scan(&[
+            "[   0% ] \u{1b}[90m\u{1b}[1mexport\u{1b}[22m | Started Exporting for iOS (Project Files Only) (2 steps)\u{1b}[39m\u{1b}[0m",
+            "[   4% ] \u{1b}[90m\u{1b}[1msavepack\u{1b}[22m | Storing File: res://assets/avatar/dcl_toon.gdshader\u{1b}[39m\u{1b}[0m",
+        ]);
+        assert_eq!(out.bake_steps, None);
+        assert_eq!(out.metal_caches_packed, 0);
+        let err = verify_shader_bake_output(&out).unwrap_err().to_string();
+        assert!(err.contains("never ran"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_bake_without_the_metal_toolchain() {
+        let out = scan(&[
+            "[   0% ] \u{1b}[90m\u{1b}[1mbaking_shaders\u{1b}[22m | Started Baking shaders (597 steps)\u{1b}[39m\u{1b}[0m",
+            "WARNING: Metal shader baking limited to SPIR-V: Unable to determine toolchain properties to compile .metallib",
+            "[   1% ] \u{1b}[90m\u{1b}[1msavepack\u{1b}[22m | Storing File: res://.godot/shader_cache/SkyShaderRD/b5fd/de67.metal.cache\u{1b}[39m\u{1b}[0m",
+        ]);
+        assert!(out.spirv_only_warning);
+        let err = verify_shader_bake_output(&out).unwrap_err().to_string();
+        assert!(err.contains("Metal toolchain"), "{err}");
+    }
+}

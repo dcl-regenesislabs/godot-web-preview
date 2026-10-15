@@ -1,0 +1,122 @@
+use std::collections::{HashMap, HashSet};
+
+use godot::{
+    classes::{input::MouseMode, Input},
+    prelude::*,
+};
+
+use crate::{
+    dcl::components::proto_components::sdk::components::common::InputAction,
+    godot_classes::dcl_global::DclGlobal,
+};
+
+/// Minimum action strength for analog movement actions (joystick) to be
+/// considered "pressed" when reporting to the SDK.  This prevents tiny
+/// accidental stick displacements from firing spurious IaForward / IaBackward /
+/// IaLeft / IaRight events to scenes.
+const ANALOG_ACTION_THRESHOLD: f32 = 0.5;
+
+/// Maps a DCL `InputAction` to the corresponding Godot input action name (`ia_*`).
+/// Returns `None` for meta/query actions with no concrete binding (`IaAny`, `IaModifier`).
+/// Shared by the input poller and UI input binding (`DclUiControl`).
+pub fn input_action_to_godot_action(action: InputAction) -> Option<&'static str> {
+    Some(match action {
+        InputAction::IaPointer => "ia_pointer",
+        InputAction::IaPrimary => "ia_primary",
+        InputAction::IaSecondary => "ia_secondary",
+        InputAction::IaForward => "ia_forward",
+        InputAction::IaBackward => "ia_backward",
+        InputAction::IaRight => "ia_right",
+        InputAction::IaLeft => "ia_left",
+        InputAction::IaJump => "ia_jump",
+        InputAction::IaWalk => "ia_walk",
+        InputAction::IaAction3 => "ia_action_3",
+        InputAction::IaAction4 => "ia_action_4",
+        InputAction::IaAction5 => "ia_action_5",
+        InputAction::IaAction6 => "ia_action_6",
+        InputAction::IaAny | InputAction::IaModifier => return None,
+    })
+}
+
+pub struct InputState {
+    dcl_to_action: HashMap<InputAction, StringName>,
+    pub state: HashMap<InputAction, bool>, // for now, only support bool states
+}
+
+impl InputState {
+    pub fn default() -> Self {
+        // Derive the action-name map from the single source of truth
+        // (`input_action_to_godot_action`) so the two can't drift apart. `IaAny` / `IaModifier`
+        // have no binding and are filtered out.
+        let dcl_to_action: HashMap<InputAction, StringName> = [
+            InputAction::IaPointer,
+            InputAction::IaPrimary,
+            InputAction::IaSecondary,
+            InputAction::IaForward,
+            InputAction::IaBackward,
+            InputAction::IaRight,
+            InputAction::IaLeft,
+            InputAction::IaJump,
+            InputAction::IaWalk,
+            InputAction::IaAction3,
+            InputAction::IaAction4,
+            InputAction::IaAction5,
+            InputAction::IaAction6,
+        ]
+        .into_iter()
+        .filter_map(|a| input_action_to_godot_action(a).map(|name| (a, StringName::from(name))))
+        .collect();
+
+        let state = HashMap::from_iter(dcl_to_action.keys().map(|k| (*k, false)));
+
+        Self {
+            dcl_to_action,
+            state,
+        }
+    }
+
+    fn is_movement_action(action: &InputAction) -> bool {
+        matches!(
+            action,
+            InputAction::IaForward
+                | InputAction::IaBackward
+                | InputAction::IaLeft
+                | InputAction::IaRight
+        )
+    }
+
+    pub fn get_new_inputs(&mut self) -> HashSet<(InputAction, bool)> {
+        let mut result = HashSet::new();
+        let input: Gd<Input> = Input::singleton();
+
+        // Desktop: Skip the actions when you´re without the pointer locked,
+        // it means that you are interacting with the UI.
+        // Mobile: Ignore that rule
+        let is_pointer_locked = input.get_mouse_mode() == MouseMode::CAPTURED;
+        let joypad_window_open = DclGlobal::singleton().bind().joypad_input_active();
+        let is_mobile = DclGlobal::singleton().bind().is_mobile;
+        let forward_all = is_pointer_locked || is_mobile;
+        // The joypad window only opens on on-screen button activity; while it's
+        // open, forward action buttons but never WASD/analog movement — typing
+        // with an unlocked mouse must not steer the avatar into scenes.
+        for (input_action, action_string) in self.dcl_to_action.iter() {
+            let forward =
+                forward_all || (joypad_window_open && !Self::is_movement_action(input_action));
+            if !forward {
+                continue;
+            }
+            let current_state = if Self::is_movement_action(input_action) {
+                // Use strength threshold for movement actions so that tiny
+                // analog stick displacements don't send SDK events.
+                input.get_action_strength(action_string) > ANALOG_ACTION_THRESHOLD
+            } else {
+                input.is_action_pressed(action_string)
+            };
+            if self.state[input_action] != current_state {
+                self.state.insert(*input_action, current_state);
+                result.insert((*input_action, current_state));
+            }
+        }
+        result
+    }
+}

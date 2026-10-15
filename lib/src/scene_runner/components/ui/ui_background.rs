@@ -1,0 +1,112 @@
+use godot::{classes::Node, obj::NewAlloc, prelude::Gd};
+
+use crate::{
+    dcl::{
+        components::SceneComponentId,
+        crdt::{
+            last_write_wins::LastWriteWinsComponentOperation, SceneCrdtState,
+            SceneCrdtStateProtoComponents,
+        },
+    },
+    godot_classes::dcl_ui_background::DclUiBackground,
+    scene_runner::scene::Scene,
+};
+
+pub fn update_ui_background(scene: &mut Scene, crdt_state: &mut SceneCrdtState) {
+    let godot_dcl_scene = &mut scene.godot_dcl_scene;
+    let dirty_lww_components = &scene.current_dirty.lww_components;
+    let ui_background_component = SceneCrdtStateProtoComponents::get_ui_background(crdt_state);
+
+    if let Some(dirty_ui_background) = dirty_lww_components.get(&SceneComponentId::UI_BACKGROUND) {
+        for entity in dirty_ui_background {
+            let value = if let Some(entry) = ui_background_component.get(entity) {
+                entry.value.clone()
+            } else {
+                None
+            };
+
+            let existing_ui_background = godot_dcl_scene
+                .ensure_node_ui(entity)
+                .base_ui
+                .as_mut()
+                .unwrap();
+
+            if value.is_none() {
+                if let Some(mut existing) = existing_ui_background.bkg_node.take() {
+                    existing.queue_free();
+                    existing_ui_background
+                        .base_control
+                        .remove_child(&existing.upcast::<Node>());
+                }
+                existing_ui_background.has_background = false;
+                continue;
+            }
+
+            existing_ui_background.has_background = true;
+
+            let value = value.as_ref().unwrap();
+            let parent_size = existing_ui_background.base_control.get_size();
+            tracing::debug!(
+                "[UI_BKG] Entity {:?} - update_ui_background: parent_control_size={:?}, texture_mode={:?}, has_texture={:?}",
+                entity,
+                parent_size,
+                value.texture_mode,
+                value.texture.is_some()
+            );
+
+            let mut existing_ui_background_control =
+                if let Some(existing) = existing_ui_background.bkg_node.clone() {
+                    tracing::debug!(
+                        "[UI_BKG] Entity {:?} - reusing existing background node",
+                        entity
+                    );
+                    existing
+                } else {
+                    tracing::debug!(
+                        "[UI_BKG] Entity {:?} - creating NEW background node",
+                        entity
+                    );
+                    let mut node: Gd<DclUiBackground> = DclUiBackground::new_alloc();
+                    node.set_name("bkg");
+                    node.set_anchors_preset(godot::classes::control::LayoutPreset::FULL_RECT);
+
+                    existing_ui_background
+                        .base_control
+                        .add_child(&node.clone().upcast::<Node>());
+                    existing_ui_background
+                        .base_control
+                        .move_child(&node.clone().upcast::<Node>(), 0);
+                    existing_ui_background.bkg_node = Some(node.clone());
+                    node
+                };
+
+            let bkg_size_before = existing_ui_background_control.get_size();
+            let bkg_pos_before = existing_ui_background_control.get_position();
+            tracing::debug!(
+                "[UI_BKG] Entity {:?} - calling change_value, bkg_size_before={:?}, bkg_pos_before={:?}",
+                entity,
+                bkg_size_before,
+                bkg_pos_before
+            );
+
+            existing_ui_background_control
+                .bind_mut()
+                .change_value(value.clone(), scene.content_mapping.clone());
+
+            // Apply the (possibly already-set) corner radii so the background is
+            // clipped to the rounded shape from the moment it is first created.
+            existing_ui_background_control
+                .bind_mut()
+                .set_corner_radii(existing_ui_background.ui_transform.border_radii);
+
+            let bkg_size_after = existing_ui_background_control.get_size();
+            let bkg_pos_after = existing_ui_background_control.get_position();
+            tracing::debug!(
+                "[UI_BKG] Entity {:?} - after change_value: bkg_size_after={:?}, bkg_pos_after={:?}",
+                entity,
+                bkg_size_after,
+                bkg_pos_after
+            );
+        }
+    }
+}

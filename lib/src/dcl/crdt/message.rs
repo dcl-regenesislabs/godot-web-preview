@@ -1,0 +1,616 @@
+use crate::dcl::{
+    components::{component_id_to_name, SceneComponentId, SceneCrdtTimestamp, SceneEntityId},
+    crdt::SceneCrdtState,
+    serialization::{
+        reader::{DclReader, DclReaderError},
+        writer::DclWriter,
+    },
+};
+
+use num_derive::{FromPrimitive, ToPrimitive};
+use num_traits::FromPrimitive;
+
+use crate::tools::scene_inspector::{
+    CrdtDirection, CrdtLogEntry, CrdtOperation, SceneInspectorEntry, SceneInspectorSender,
+};
+
+/// Context for logging CRDT messages. Constructed only by debugged scenes.
+pub struct CrdtLoggingContext {
+    pub sender: SceneInspectorSender,
+    pub scene_id: i32,
+    pub tick: u32,
+    pub direction: CrdtDirection,
+}
+
+impl CrdtLoggingContext {
+    pub fn new(
+        sender: SceneInspectorSender,
+        scene_id: i32,
+        tick: u32,
+        direction: CrdtDirection,
+    ) -> Self {
+        Self {
+            sender,
+            scene_id,
+            tick,
+            direction,
+        }
+    }
+}
+
+#[derive(FromPrimitive, ToPrimitive, Debug, Clone, Copy)]
+pub enum CrdtMessageType {
+    PutComponent = 1,
+    DeleteComponent = 2,
+
+    DeleteEntity = 3,
+    AppendValue = 4,
+}
+
+const CRDT_HEADER_SIZE: usize = 8;
+
+fn process_message(
+    scene_crdt_state: &mut SceneCrdtState,
+    crdt_type: CrdtMessageType,
+    stream: &mut DclReader,
+) -> Result<(), DclReaderError> {
+    match crdt_type {
+        CrdtMessageType::PutComponent => {
+            let entity = stream.read()?;
+            let component: SceneComponentId = stream.read()?;
+
+            let timestamp: SceneCrdtTimestamp = stream.read()?;
+            let _content_len = stream.read_u32()? as usize;
+
+            if !scene_crdt_state.entities.try_init(entity) {
+                return Ok(());
+            }
+            let Some(component_definition) =
+                scene_crdt_state.get_lww_component_definition_mut(component)
+            else {
+                tracing::warn!(
+                    "CRDT: unknown LWW component {} for entity {:?} (PutComponent skipped)",
+                    component.0,
+                    entity
+                );
+                return Ok(());
+            };
+
+            component_definition.set_from_binary(entity, timestamp, stream);
+        }
+        CrdtMessageType::DeleteComponent => {
+            let entity = stream.read()?;
+            let component: SceneComponentId = stream.read()?;
+
+            let timestamp: SceneCrdtTimestamp = stream.read()?;
+
+            if !scene_crdt_state.entities.try_init(entity) {
+                return Ok(());
+            }
+            let Some(component_definition) =
+                scene_crdt_state.get_lww_component_definition_mut(component)
+            else {
+                tracing::warn!(
+                    "CRDT: unknown LWW component {} for entity {:?} (DeleteComponent skipped)",
+                    component.0,
+                    entity
+                );
+                return Ok(());
+            };
+
+            component_definition.set_none(entity, timestamp);
+        }
+        CrdtMessageType::DeleteEntity => {
+            let entity: SceneEntityId = stream.read()?;
+            scene_crdt_state.entities.kill(entity);
+        }
+        CrdtMessageType::AppendValue => {
+            let entity = stream.read()?;
+            let component: SceneComponentId = stream.read()?;
+
+            let timestamp: SceneCrdtTimestamp = stream.read()?;
+            let _content_len = stream.read_u32()? as usize;
+
+            if !scene_crdt_state.entities.try_init(entity) {
+                return Ok(());
+            }
+            let Some(component_definition) =
+                scene_crdt_state.get_gos_component_definition_mut(component)
+            else {
+                tracing::warn!(
+                    "CRDT: unknown GOS component {} for entity {:?} (AppendValue skipped)",
+                    component.0,
+                    entity
+                );
+                return Ok(());
+            };
+
+            component_definition.append_from_binary(entity, timestamp, stream);
+        }
+    }
+
+    Ok(())
+}
+
+/// Process multiple CRDT messages from a stream. Most callers go through this
+/// thin wrapper which never allocates a logging context — used by all
+/// non-debugged scenes (the hot path).
+pub fn process_many_messages(stream: &mut DclReader, scene_crdt_state: &mut SceneCrdtState) {
+    process_many_messages_with_logging(stream, scene_crdt_state, None);
+}
+
+/// Process multiple CRDT messages from a stream with an optional logging
+/// context. When `logging_ctx` is `None`, the logging branch is a single
+/// predictable jump; the cold logging path lives in `log_crdt_message` which
+/// is `#[inline(never)]` so it never bloats the hot loop.
+pub fn process_many_messages_with_logging(
+    stream: &mut DclReader,
+    scene_crdt_state: &mut SceneCrdtState,
+    logging_ctx: Option<&CrdtLoggingContext>,
+) {
+    // collect commands
+    while stream.len() > CRDT_HEADER_SIZE {
+        let length = stream.read_u32().unwrap() as usize;
+        let crdt_type_raw = stream.read_u32().unwrap();
+        let message_size = length.saturating_sub(8);
+        if message_size > stream.len() {
+            tracing::warn!(
+                "CRDT message size {} exceeds remaining buffer {}, stopping parse",
+                message_size,
+                stream.len()
+            );
+            break;
+        }
+        let mut message_stream = stream.take_reader(message_size);
+
+        match FromPrimitive::from_u32(crdt_type_raw) {
+            Some(crdt_type) => {
+                if let Some(ctx) = logging_ctx {
+                    log_crdt_message(ctx, crdt_type, &message_stream, message_size);
+                }
+
+                if let Err(e) = process_message(scene_crdt_state, crdt_type, &mut message_stream) {
+                    tracing::warn!("CRDT Buffer error: {:?}", e);
+                };
+            }
+            None => {
+                tracing::warn!("CRDT Header error: unhandled crdt message type {crdt_type_raw}")
+            }
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_crdt_message(
+    ctx: &CrdtLoggingContext,
+    crdt_type: CrdtMessageType,
+    message_stream: &DclReader,
+    message_size: usize,
+) {
+    use crate::dcl::components::proto_components::deserialize_component_to_json;
+    use crate::tools::scene_inspector::current_timestamp_ms;
+
+    // Parse minimal info from message for logging without consuming the stream
+    let data = message_stream.as_slice();
+    if data.len() < 4 {
+        return;
+    }
+
+    // Entity ID is first 4 bytes (u16 number + u16 version)
+    let entity_number = u16::from_le_bytes([data[0], data[1]]);
+    let entity_version = u16::from_le_bytes([data[2], data[3]]);
+    let entity_id = ((entity_version as u32) << 16) | (entity_number as u32);
+
+    // Component ID, timestamp, and payload depend on message type
+    // Format for PUT: entity(4) + component(4) + timestamp(4) + content_length(4) + payload
+    // Format for DELETE: entity(4) + component(4) + timestamp(4)
+    // Format for DELETE_ENTITY: entity(4)
+    let (component_id, crdt_timestamp, payload, bin_payload) =
+        if matches!(crdt_type, CrdtMessageType::DeleteEntity) {
+            (0, 0, None, None)
+        } else if data.len() >= 12 {
+            let comp_id = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+            let timestamp = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+
+            // For PutComponent and AppendValue, payload starts after content_length field (offset 16)
+            let (payload, bin_payload) = if matches!(
+                crdt_type,
+                CrdtMessageType::PutComponent | CrdtMessageType::AppendValue
+            ) && data.len() > 16
+            {
+                let payload_data = &data[16..];
+                let json_payload = deserialize_component_to_json(comp_id, payload_data);
+                // Hex is redundant when JSON decoded — only attach as fallback,
+                // or when the runtime flag forces it on.
+                let bin_payload = if json_payload.is_none()
+                    || crate::tools::scene_inspector::is_bin_payload_included()
+                {
+                    Some(crate::tools::scene_inspector::bytes_to_hex(payload_data))
+                } else {
+                    None
+                };
+                (json_payload, bin_payload)
+            } else {
+                (None, None)
+            };
+
+            (comp_id, timestamp, payload, bin_payload)
+        } else {
+            (0, 0, None, None)
+        };
+
+    let operation = match crdt_type {
+        CrdtMessageType::PutComponent => CrdtOperation::Put,
+        CrdtMessageType::DeleteComponent => CrdtOperation::Delete,
+        CrdtMessageType::DeleteEntity => CrdtOperation::DeleteEntity,
+        CrdtMessageType::AppendValue => CrdtOperation::Append,
+    };
+
+    let entry = CrdtLogEntry {
+        scene_id: ctx.scene_id,
+        tick: ctx.tick,
+        timestamp_ms: current_timestamp_ms(),
+        direction: ctx.direction,
+        entity_id,
+        component_name: std::borrow::Cow::Borrowed(component_id_to_name(component_id)),
+        operation,
+        crdt_timestamp,
+        payload,
+        bin_payload,
+        raw_size_bytes: message_size,
+    };
+
+    crate::tools::scene_inspector::try_send_entry(
+        &ctx.sender,
+        SceneInspectorEntry::CrdtMessage(entry),
+    );
+}
+
+// ADR-117 wire sizes. Every message starts with the 8-byte header
+// (length u32 + type u32) and `length` counts that header too.
+//
+// PutComponent / AppendValue: header + entity(4) + component(4) + timestamp(4)
+// + content_length(4) = 24 bytes, followed by `content_length` payload bytes.
+const CRDT_PUT_COMPONENT_HEADER_SIZE: usize = CRDT_HEADER_SIZE + 16;
+// DeleteComponent: header + entity(4) + component(4) + timestamp(4) = 20 bytes.
+const CRDT_DELETE_COMPONENT_LENGTH: usize = CRDT_HEADER_SIZE + 12;
+// DeleteEntity: header + entity(4) = 12 bytes.
+const CRDT_DELETE_ENTITY_LENGTH: usize = CRDT_HEADER_SIZE + 4;
+
+#[allow(dead_code)]
+pub fn delete_entity(entity_id: &SceneEntityId, writer: &mut DclWriter) {
+    writer.write_u32(CRDT_DELETE_ENTITY_LENGTH as u32);
+    writer.write(&CrdtMessageType::DeleteEntity);
+    writer.write(entity_id);
+}
+
+pub fn put_or_delete_lww_component(
+    scene_crdt_state: &SceneCrdtState,
+    entity_id: &SceneEntityId,
+    component_id: &SceneComponentId,
+    writer: &mut DclWriter,
+) -> Result<(), String> {
+    let Some(component_definition) = scene_crdt_state.get_lww_component_definition(*component_id)
+    else {
+        return Err("Component not found".into());
+    };
+    let Some(opaque_value) = component_definition.get_opaque(*entity_id) else {
+        return Err("Entity not found".into());
+    };
+
+    if opaque_value.value.is_some() {
+        // TODO: this can be improved by using the same writer, we don't know the component_data_length in advance to write the right length
+        //  but if we have the position written we can overwrite then
+        let mut component_buf = Vec::new();
+        let mut component_writer = DclWriter::new(&mut component_buf);
+        component_definition.to_binary(*entity_id, &mut component_writer)?;
+
+        let content_length = component_buf.len();
+        let length = CRDT_PUT_COMPONENT_HEADER_SIZE + component_buf.len();
+
+        writer.write_u32(length as u32);
+        writer.write(&CrdtMessageType::PutComponent);
+        writer.write(entity_id);
+        writer.write(component_id);
+        writer.write(&opaque_value.timestamp);
+
+        writer.write_u32(content_length as u32);
+        writer.write_raw(&component_buf)
+    } else {
+        writer.write_u32(CRDT_DELETE_COMPONENT_LENGTH as u32);
+        writer.write(&CrdtMessageType::DeleteComponent);
+        writer.write(entity_id);
+        writer.write(component_id);
+        writer.write(&opaque_value.timestamp);
+    }
+
+    Ok(())
+}
+
+pub fn append_gos_component(
+    scene_crdt_state: &SceneCrdtState,
+    entity_id: &SceneEntityId,
+    component_id: &SceneComponentId,
+    elements_count: &usize,
+    writer: &mut DclWriter,
+) -> Result<(), String> {
+    let Some(component_definition) = scene_crdt_state.get_gos_component_definition(*component_id)
+    else {
+        return Err("Component not found".into());
+    };
+
+    // `to_binary` takes a reverse index (0 = newest entry), so iterate the count
+    // backwards to emit the new entries in chronological (append) order — with
+    // several appends in one tick (e.g. an emote's INTERRUPTED terminal entry
+    // followed by the next emote's STARTED) the scene must see them in the order
+    // they happened.
+    for i in (0..*elements_count).rev() {
+        // TODO: this can be improved by using the same writer, we don't know the component_data_length in advance to write the right length
+        //  but if we have the position written we can overwrite then
+        let mut component_buf = Vec::new();
+        let mut component_writer = DclWriter::new(&mut component_buf);
+        component_definition.to_binary(*entity_id, i, &mut component_writer)?;
+
+        let content_length = component_buf.len();
+        let length = CRDT_PUT_COMPONENT_HEADER_SIZE + component_buf.len();
+
+        writer.write_u32(length as u32);
+        writer.write(&CrdtMessageType::AppendValue);
+        writer.write(entity_id);
+        writer.write(component_id);
+        writer.write(&SceneCrdtTimestamp(0));
+
+        writer.write_u32(content_length as u32);
+        writer.write_raw(&component_buf)
+    }
+
+    Ok(())
+}
+
+/// Filters raw CRDT bytes, preserving only messages for components known to
+/// `scene_crdt_state`. Unknown component messages are dropped at the byte level,
+/// which avoids prost re-serialization that can strip unknown proto fields.
+pub fn filter_known_crdt_messages(raw: &[u8], scene_crdt_state: &SceneCrdtState) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut pos = 0;
+
+    while pos + CRDT_HEADER_SIZE <= raw.len() {
+        // Read message length (4 bytes LE) – includes the 8-byte header
+        let msg_len = u32::from_le_bytes(raw[pos..pos + 4].try_into().unwrap()) as usize;
+        let crdt_type = u32::from_le_bytes(raw[pos + 4..pos + 8].try_into().unwrap());
+
+        // Total bytes this message occupies (length field itself + body)
+        let total = 4 + msg_len.saturating_sub(4);
+        // Guard: make sure we don't read past the buffer
+        if pos + 4 + msg_len.saturating_sub(4) > raw.len() {
+            tracing::warn!(
+                "CRDT filter: truncated message at pos={}, msg_len={}, remaining={}",
+                pos,
+                msg_len,
+                raw.len() - pos
+            );
+            break;
+        }
+
+        let keep = match FromPrimitive::from_u32(crdt_type) {
+            Some(CrdtMessageType::DeleteEntity) => true,
+            Some(CrdtMessageType::PutComponent) | Some(CrdtMessageType::DeleteComponent) => {
+                // entity(4) + component_id(4) start at offset 8 inside the message
+                if msg_len >= 16 {
+                    let comp_id_offset = pos + 12; // 4(len) + 4(type) + 4(entity)
+                    let comp_id = u32::from_le_bytes(
+                        raw[comp_id_offset..comp_id_offset + 4].try_into().unwrap(),
+                    );
+                    let cid = SceneComponentId(comp_id);
+                    scene_crdt_state.get_lww_component_definition(cid).is_some()
+                } else {
+                    true // malformed but let the normal parser handle it
+                }
+            }
+            Some(CrdtMessageType::AppendValue) => {
+                if msg_len >= 16 {
+                    let comp_id_offset = pos + 12;
+                    let comp_id = u32::from_le_bytes(
+                        raw[comp_id_offset..comp_id_offset + 4].try_into().unwrap(),
+                    );
+                    let cid = SceneComponentId(comp_id);
+                    scene_crdt_state.get_gos_component_definition(cid).is_some()
+                } else {
+                    true
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "CRDT filter: unknown message type {} at pos={}",
+                    crdt_type,
+                    pos
+                );
+                false
+            }
+        };
+
+        if keep {
+            out.extend_from_slice(&raw[pos..pos + total]);
+        }
+
+        pos += total;
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dcl::components::proto_components::sdk::components::PbAvatarEmoteCommand;
+    use crate::dcl::components::transform_and_parent::DclTransformAndParent;
+    use crate::dcl::crdt::grow_only_set::GenericGrowOnlySetComponentOperation;
+    use crate::dcl::crdt::last_write_wins::LastWriteWinsComponentOperation;
+    use crate::dcl::crdt::SceneCrdtStateProtoComponents;
+
+    /// `GrowOnlySet::to_binary` takes a REVERSE index (0 = newest entry), so walking
+    /// `0..elements_count` forward emitted a tick's new entries newest-first. Scenes
+    /// that consume entries in arrival order — rather than sorting by timestamp — then
+    /// saw an emote's ES_INTERRUPTED ahead of the ES_STARTED it followed, and video
+    /// events arrived newest-first and were dropped as stale by the SDK's dedup.
+    ///
+    /// Guards every grow-only component, not just emotes: whenever more than one entry
+    /// lands in a single tick, delivery order must match append order.
+    #[test]
+    fn append_gos_component_emits_entries_in_append_order() {
+        // from_proto (not default) registers the generated proto components.
+        let mut crdt_state = SceneCrdtState::from_proto();
+        let entity = SceneEntityId::PLAYER;
+
+        let commands = SceneCrdtStateProtoComponents::get_avatar_emote_command_mut(&mut crdt_state);
+        for urn in ["first-urn", "second-urn", "third-urn"] {
+            commands.append(
+                entity,
+                PbAvatarEmoteCommand {
+                    emote_urn: urn.to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let mut buf = Vec::new();
+        let mut writer = DclWriter::new(&mut buf);
+        append_gos_component(
+            &crdt_state,
+            &entity,
+            &SceneComponentId::AVATAR_EMOTE_COMMAND,
+            &3,
+            &mut writer,
+        )
+        .expect("the three appended entries should serialize");
+
+        // The urns are plain UTF-8 in the protobuf payload, so their byte offsets in
+        // the stream reveal the emitted order without re-implementing the parser.
+        let stream = String::from_utf8_lossy(&buf);
+        let first = stream.find("first-urn").expect("first entry missing");
+        let second = stream.find("second-urn").expect("second entry missing");
+        let third = stream.find("third-urn").expect("third entry missing");
+
+        assert!(
+            first < second && second < third,
+            "entries must be emitted oldest-first; got offsets {first}, {second}, {third}"
+        );
+    }
+
+    /// The renderer used to declare a 28-byte length on DeleteComponent while
+    /// writing 20 bytes (the PUT/DELETE constants were crossed). Any decoder that
+    /// trusts `length` then either mis-aligns the next message or, in `@dcl/ecs`,
+    /// silently drops the delete when it is the last message of the chunk (#2851).
+    ///
+    /// Round-trips a [DeleteComponent, PutComponent] pair through our own reader:
+    /// with the wrong length the PUT that follows the delete is swallowed.
+    #[test]
+    fn delete_component_declares_its_real_wire_length() {
+        let deleted = SceneEntityId::new(512, 0);
+        let kept = SceneEntityId::new(513, 0);
+
+        let mut sender = SceneCrdtState::from_proto();
+        {
+            let transform = sender.get_transform_mut();
+            // put Some then None so the delete carries a non-zero timestamp (1).
+            transform.put(deleted, Some(DclTransformAndParent::default()));
+            transform.put(deleted, None);
+            transform.put(kept, Some(DclTransformAndParent::default()));
+        }
+
+        let mut buf = Vec::new();
+        let mut writer = DclWriter::new(&mut buf);
+        for entity in [&deleted, &kept] {
+            put_or_delete_lww_component(&sender, entity, &SceneComponentId::TRANSFORM, &mut writer)
+                .expect("transform entries should serialize");
+        }
+
+        // Wire check: the delete must declare exactly the bytes it wrote, and the
+        // PUT header must start right after it.
+        let declared_delete_len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
+        assert_eq!(
+            declared_delete_len, 20,
+            "DeleteComponent is 20 bytes on the wire"
+        );
+        let next_type = u32::from_le_bytes(buf[24..28].try_into().unwrap());
+        assert_eq!(next_type, CrdtMessageType::PutComponent as u32);
+        let declared_put_len = u32::from_le_bytes(buf[20..24].try_into().unwrap()) as usize;
+        assert_eq!(declared_put_len, buf.len() - 20);
+
+        // Behavioural check: a receiver replaying the stream sees both messages.
+        let mut receiver = SceneCrdtState::from_proto();
+        let mut reader = DclReader::new(&buf);
+        process_many_messages(&mut reader, &mut receiver);
+
+        let transform = receiver.get_transform();
+        let deleted_entry = transform.get(&deleted).expect("delete must be applied");
+        assert_eq!(deleted_entry.timestamp, SceneCrdtTimestamp(1));
+        assert!(deleted_entry.value.is_none());
+        let kept_entry = transform
+            .get(&kept)
+            .expect("put after the delete must not be swallowed");
+        assert_eq!(kept_entry.timestamp, SceneCrdtTimestamp(0));
+        assert!(kept_entry.value.is_some());
+    }
+
+    /// GODOT-EXPLORER-2ZD: a header declaring more bytes than the batch holds
+    /// panicked with "range end index out of range for slice".
+    #[test]
+    fn declared_length_past_the_buffer_does_not_panic() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1000u32.to_le_bytes());
+        buf.extend_from_slice(&(CrdtMessageType::PutComponent as u32).to_le_bytes());
+        buf.extend_from_slice(&[0u8; 16]);
+
+        let mut state = SceneCrdtState::from_proto();
+        process_many_messages(&mut DclReader::new(&buf), &mut state);
+    }
+
+    fn header(length: u32, crdt_type: CrdtMessageType) -> Vec<u8> {
+        [length.to_le_bytes(), (crdt_type as u32).to_le_bytes()].concat()
+    }
+
+    fn transform_put(entity: SceneEntityId, transform: &DclTransformAndParent) -> Vec<u8> {
+        let mut state = SceneCrdtState::from_proto();
+        state
+            .get_transform_mut()
+            .put(entity, Some(transform.clone()));
+        let mut buf = Vec::new();
+        let mut writer = DclWriter::new(&mut buf);
+        put_or_delete_lww_component(&state, &entity, &SceneComponentId::TRANSFORM, &mut writer)
+            .expect("transform entry should serialize");
+        buf
+    }
+
+    /// A message whose length is too short for its fixed fields (reachable from
+    /// any scene through `op_crdt_send_to_renderer`, where a panic aborts the
+    /// app) is skipped, and the messages after it still apply.
+    #[test]
+    fn message_shorter_than_its_fields_is_skipped() {
+        let kept = SceneEntityId::new(513, 0);
+        let mut buf = header(12, CrdtMessageType::PutComponent);
+        buf.extend_from_slice(&[0, 2, 0, 0]);
+        buf.extend(transform_put(kept, &DclTransformAndParent::default()));
+
+        let mut state = SceneCrdtState::from_proto();
+        process_many_messages(&mut DclReader::new(&buf), &mut state);
+        assert!(state.get_transform().get(&kept).is_some());
+    }
+
+    /// A Transform PUT whose payload is shorter than the 44 bytes it needs.
+    #[test]
+    fn short_transform_payload_is_skipped() {
+        let entity = SceneEntityId::new(512, 0);
+        let mut buf = transform_put(entity, &DclTransformAndParent::default());
+        let payload_len = 44;
+        let cut = 20;
+        buf.truncate(buf.len() - payload_len + cut);
+        let declared = (buf.len() as u32).to_le_bytes();
+        buf[0..4].copy_from_slice(&declared);
+
+        let mut state = SceneCrdtState::from_proto();
+        process_many_messages(&mut DclReader::new(&buf), &mut state);
+        assert!(state.get_transform().get(&entity).is_none());
+    }
+}
