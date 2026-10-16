@@ -137,7 +137,8 @@ in parallel on separate three-core macOS 15 runners.
 Dedicated runners use normal CPU priority; local builds keep their two-job,
 background defaults. Export runs on macOS after both builds and the native
 gameplay/Pulse checks pass. Texture, buffer and frame-pacing
-regressions run in Linux Chromium with SwiftShader before packaging.
+regressions run in Linux Chromium with SwiftShader before packaging. Linux jobs
+use Ubuntu 24.04 explicitly so `ubuntu-latest` migrations do not change the build.
 
 The native Rust library is a temporary export tool: the headless Godot editor
 loads its custom classes when importing assets and creating the `.pck`. Only the

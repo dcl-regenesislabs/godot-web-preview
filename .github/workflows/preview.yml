@@ -207,7 +207,7 @@ jobs:
             tests/*/build/export.log
   browser:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -235,7 +235,7 @@ jobs:
           path: '*.png'
   package:
     needs: [build, browser]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -281,7 +281,7 @@ jobs:
   publish:
     if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs: [package, validate]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 10
     permissions:
