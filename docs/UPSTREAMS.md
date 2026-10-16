@@ -37,7 +37,7 @@ imports remain committed. Do not use `--ours` or `--theirs` across a whole subtr
 
 Review the resulting diff and run the gameplay, scene UI and scene-comms fixtures.
 Clean merges can still change behavior. Keep the last tested npm version in the
-editor until the update has passed validation and a release is available.
+editor until the update has merged and its `next` snapshot is published.
 
 Merge source-update PRs with a **merge commit**. Squashing or rebasing the PR can
 discard the subtree import metadata needed by the next update. The updater rejects
@@ -56,7 +56,7 @@ no PR and no expensive build. Conflicts fail the sync job for investigation.
 Allow GitHub Actions to create pull requests in repository settings. The sync job
 uses the repository's temporary `GITHUB_TOKEN` for branch/PR creation and workflow
 dispatch; it has no npm publishing permissions. Build jobs use read-only tokens,
-and only the tag release job requests OIDC credentials. Sync validation also
+and only the publish job (main pushes and release tags) requests OIDC credentials. Sync validation also
 enables the optional native Deno compatibility check. No PAT or
 `GODOT_SOURCE_TOKEN` is needed. Approve any additional PR workflow runs GitHub holds
 for approval, and review the dispatched validation run before merging.

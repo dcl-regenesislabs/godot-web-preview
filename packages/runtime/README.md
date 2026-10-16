@@ -28,34 +28,40 @@ documentation also build the runtime and create the `mobile-preview-npm` artifac
 `package/dist/`; there is no duplicate raw-export artifact. All three browser
 graphics regressions and package verification must pass before the run is accepted
 or a release can publish. Manual runs and release tags always build.
-A stable `X.Y.Z`
-tag matching `package.json` publishes through
+Publishing goes through
 [Decentraland's Oddish Action](https://github.com/decentraland/oddish-action), pinned
 to a reviewed commit, using npm OIDC on a GitHub-hosted runner. The workflow
 extracts the tested tarball, verifies its asset hashes, and gives that package
-directory to Oddish. Oddish adds the source commit to `package.json` and publishes
-the same runtime assets to `latest`.
+directory to Oddish, which adds the source commit to `package.json` and publishes
+the same runtime assets:
 
-Use numeric tags such as `0.1.0`, **without `v`**. Oddish treats `v0.1.0` as a
-snapshot rather than a stable release; the release check rejects that format.
-PRs, main pushes and manual validation runs never publish.
+- Every `main` push publishes a snapshot to the `next` dist-tag, versioned
+  `<package.json version>-<run id>.commit-<sha>`. `check-dist` accepts that
+  prerelease of the manifest version, so `prepack` still verifies every asset.
+- A numeric tag matching `package.json` (`0.1.0`, **without `v`**) publishes that
+  stable version to `latest`. Oddish treats `v0.1.0` as a snapshot; the release
+  check rejects that format.
+
+PRs, documentation-only pushes and manual validation runs never publish. Consumers
+pin an exact `next` version; `npm view @dcl-regenesislabs/mobile-preview-runtime
+dist-tags.next` prints the newest one.
 
 Configure npm trusted publishing for GitHub owner `dcl-regenesislabs`, repository
 `godot-web-preview`, workflow `preview.yml`, environment `production`, with direct
-`npm publish` and dist-tag management allowed. Oddish updates `latest` after
-publishing. The publish job uses `id-token: write`; no npm token is
-stored. It pins npm 11.21.0 for OIDC dist-tag support. Releases include npm provenance linking each package to this public source
+`npm publish` and dist-tag management allowed. Both publishes run in that environment
+because the trusted publisher is bound to its name; do not give it required
+reviewers, or every `next` snapshot waits for approval. The publish job uses
+`id-token: write`; no npm token is stored. It pins npm 11.21.0 for OIDC dist-tag
+support. Releases include npm provenance linking each package to this public source
 repository and its build. See [npm's trusted publishing guide](https://docs.npmjs.com/trusted-publishers/).
 
-For the first release, a maintainer must bootstrap the package name and register
-the trusted publisher before tagging the first OIDC release. Reserve `0.1.0` for
-CI: use a separate bootstrap prerelease and dist-tag, such as
-`0.0.0-bootstrap.0` on `bootstrap`, for the initial manual publication. The package is
-published as a bootstrap placeholder; consumers targeting `0.1.0` cannot install
-the runtime until that release exists. Approve the complete CI run and configure the GitHub `production`
-environment's release reviewers before releasing. Publish source/runtime first,
-then refresh the consumer's lockfile to record the registry tarball integrity
-before merging the consumer update.
+The package name was bootstrapped with a manual `0.0.0-bootstrap.0` publication on
+the `bootstrap` dist-tag; `latest` points at that placeholder until the first stable
+tag ships, so consumers install a `next` version, not `latest`. Oddish also uploads
+its own copy of the tarball as a workflow artifact with the repository's default
+retention; lower that default in the repository's Actions settings if needed. After
+a publish, refresh the consumer's lockfile so it records the registry tarball
+integrity before merging the consumer update.
 
 Engine and explorer sources are included as subtrees. Builds use the temporary
 repository `GITHUB_TOKEN` and public toolchain downloads; neither this repository

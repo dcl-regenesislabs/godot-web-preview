@@ -34,6 +34,16 @@ it('checks every packaged artifact and rejects files npm would include outside t
   assert.throws(check, /Unlisted runtime artifact/)
 })
 
+it('accepts the snapshot version Oddish assigns on main and rejects other versions', async () => {
+  const { dir, check } = await fixture()
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ version: '0.1.0-38832454401.commit-84728d7' }))
+  assert.doesNotThrow(check)
+  for (const version of ['0.1.1', '0.1.01-1.commit-84728d7']) {
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ version }))
+    assert.throws(check, /Rebuild the runtime/, version)
+  }
+})
+
 it('rejects incomplete manifests, path escapes and modified artifacts', async () => {
   const { dir, manifest, save, check } = await fixture()
   const original = { ...manifest.files }

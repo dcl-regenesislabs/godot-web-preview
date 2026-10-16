@@ -15,7 +15,7 @@ permissions:
   contents: read
 concurrency:
   group: preview-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   checks:
     if: github.event.action != 'closed'
@@ -281,7 +281,7 @@ jobs:
             fi
           done
   publish:
-    if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     needs: [package, validate]
     runs-on: ubuntu-24.04
     environment: production
@@ -304,17 +304,23 @@ jobs:
         with:
           name: mobile-preview-npm
           path: release
-      - name: Verify the built package
+      - name: Check release tag
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
+        run: node packages/runtime/scripts/check-release.mjs
+      - name: Verify the built package
         run: |
-          node packages/runtime/scripts/check-release.mjs
           tar -xzf release/dcl-regenesislabs-mobile-preview-runtime-*.tgz -C release
           node release/package/scripts/check-dist.mjs
+      # main -> next snapshot (<version>-<run id>.commit-<sha>); numeric tag -> latest.
       - name: Publish with Oddish
         uses: decentraland/oddish-action@a4e98664bf53d4aae1f6d20d1a43ff2c79b555b3 # v1
+        env:
+          BRANCH_NAME: ${{ github.ref_type == 'branch' && github.ref_name || '' }}
         with:
           cwd: ./release/package
+          deterministic-snapshot: true
           registry-url: https://registry.npmjs.org
           access: public
           provenance: true

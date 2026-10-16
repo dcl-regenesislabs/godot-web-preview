@@ -7,7 +7,8 @@ and the browser changes needed to build them together for WebGPU.
 The distributable is `@dcl-regenesislabs/mobile-preview-runtime`: prebuilt engine,
 client and assets. An editor installs an exact npm version and supplies the scene
 server, asset relay and preview controls. It does not build Godot or Rust.
-The first npm release is being prepared as **0.1.0**; it is not published yet.
+Every push to `main` publishes a `next` snapshot of that package; no stable `0.1.0`
+release exists yet.
 
 ## What the preview supports
 
@@ -155,7 +156,8 @@ Cargo caches are saved only after a successful job so a cancelled build cannot
 leave an incomplete cache under the final key. Rust still rebuilds the workspace
 crates. Documentation-only changes skip
 compilation and packaging; manual runs and release tags always run the full
-pipeline. New commits cancel obsolete validation runs, while release runs finish.
+pipeline. New commits cancel obsolete pull request runs; `main`, tag and manual runs
+queue and finish, so a publish is never interrupted.
 Cold and cached build times differ; use the separate Actions steps to measure both.
 Use `validate` as the required branch check: it accepts documentation-only runs
 and requires every build, audit and regression job for runtime changes.
@@ -173,12 +175,16 @@ with npm OIDC trusted publishing and provenance. No npm token or
 `GODOT_SOURCE_TOKEN` is required. Editors consume the package; only this repository
 owns the runtime build and release workflow.
 
-The release tag must match `packages/runtime/package.json`: **`0.1.0`, without a
-`v` prefix**, for the first release. After build, audit and browser checks pass,
-the `production` job verifies the packaged assets and lets Oddish publish to
-`latest`. Main pushes, pull requests and manual validation runs do not publish.
+Every push to `main` that passes build, audit and browser checks publishes a snapshot
+to the `next` dist-tag, versioned `<package.json version>-<run id>.commit-<sha>`
+(for example `0.1.0-38832454401.commit-84728d7`). Consumers pin that exact version;
+`npm view @dcl-regenesislabs/mobile-preview-runtime dist-tags.next` prints the newest.
+A numeric tag matching `packages/runtime/package.json` (**`0.1.0`, without a `v`
+prefix**) publishes that stable version to `latest`. Pull requests, documentation-only
+pushes and manual validation runs do not publish.
 
-The npm package must first be bootstrapped and its trusted publisher configured
-for this repository, `preview.yml` and environment `production`. Configure release
-reviewers before publishing. See [package and OIDC setup](packages/runtime/README.md)
-and [migration and remaining setup](docs/MIGRATION.md).
+Both publishes run in the `production` environment because npm's trusted publisher
+is bound to this repository, `preview.yml` and that environment name. Do not add
+required reviewers to it: they would hold every `next` snapshot. Protect `main` with
+the required `validate` check instead. See [package and OIDC
+setup](packages/runtime/README.md) and [migration and remaining setup](docs/MIGRATION.md).
