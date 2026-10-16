@@ -186,10 +186,15 @@ jobs:
           ./build.sh test webgpu-buffer-coherence
       - name: Check content thread guards
         run: node --test godot-explorer/web/tools/thread-safety.test.mjs
+      - name: Pack browser runtime
+        run: |
+          npm run build --prefix packages/runtime
+          npm pack ./packages/runtime
       - uses: actions/upload-artifact@v7
         with:
-          name: mobile-preview-export
-          path: godot-explorer/build/web/
+          name: mobile-preview-npm
+          path: dcl-regenesislabs-mobile-preview-runtime-*.tgz
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v7
@@ -197,7 +202,7 @@ jobs:
           name: webgpu-regressions
           path: tests/*/build/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -205,6 +210,7 @@ jobs:
           path: |
             godot-explorer/build/*.log
             tests/*/build/export.log
+          retention-days: 7
   browser:
     needs: build
     runs-on: ubuntu-24.04
@@ -233,6 +239,7 @@ jobs:
         with:
           name: regression-screenshots
           path: '*.png'
+          retention-days: 7
   package:
     needs: [build, browser]
     runs-on: ubuntu-24.04
@@ -246,17 +253,13 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v8
         with:
-          name: mobile-preview-export
-          path: runtime-export
-      - run: npm test --prefix packages/runtime
-      - run: npm run build --prefix packages/runtime -- "$GITHUB_WORKSPACE/runtime-export"
-      - run: npm pack ./packages/runtime
-      - uses: actions/upload-artifact@v7
-        with:
           name: mobile-preview-npm
-          path: dcl-regenesislabs-mobile-preview-runtime-*.tgz
-          if-no-files-found: error
-          retention-days: 14
+          path: release
+      - run: npm test --prefix packages/runtime
+      - name: Verify packaged runtime
+        run: |
+          tar -xzf release/dcl-regenesislabs-mobile-preview-runtime-*.tgz -C release
+          node release/package/scripts/check-dist.mjs
   validate:
     if: always() && github.event.action != 'closed'
     needs: [checks, engine, runtime, build, browser, package]

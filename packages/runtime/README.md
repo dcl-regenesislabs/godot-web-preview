@@ -23,8 +23,11 @@ unlisted or symlinked files. Generated files and tarballs are ignored by Git.
 Applications provide their own scene relay, capture adapter and asset server.
 
 The `preview.yml` workflow tests and audits every PR/main change. Changes beyond
-documentation also build the runtime and create an npm tarball after all three
-browser graphics regressions pass. Manual runs and release tags always build.
+documentation also build the runtime and create the `mobile-preview-npm` artifact
+(retained for 14 days). Extracting its tarball exposes the web files in
+`package/dist/`; there is no duplicate raw-export artifact. All three browser
+graphics regressions and package verification must pass before the run is accepted
+or a release can publish. Manual runs and release tags always build.
 A stable `X.Y.Z`
 tag matching `package.json` publishes through
 [Decentraland's Oddish Action](https://github.com/decentraland/oddish-action), pinned
