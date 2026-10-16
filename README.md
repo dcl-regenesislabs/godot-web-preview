@@ -133,7 +133,7 @@ minimize/restore, screenshots, detaching and scene reload. Only one preview inst
 should run at a time.
 
 CI runs unit tests and dependency audits first, then builds the engine and Rust client
-in parallel on separate three-core macOS runners.
+in parallel on separate three-core macOS 15 runners.
 Dedicated runners use normal CPU priority; local builds keep their two-job,
 background defaults. Export runs on macOS after both builds and the native
 gameplay/Pulse checks pass. Texture, buffer and frame-pacing
@@ -147,6 +147,7 @@ web release path; upstream syncs enable it, and manual runs can opt in with the
 
 The engine ZIP is cached by source tree and toolchain inputs and saved immediately
 after compilation. Emscripten installations and Cargo dependencies are cached too;
+native dependencies use a separate cache when the macOS runner changes.
 Rust still rebuilds the workspace crates. Documentation-only changes skip
 compilation and packaging; manual runs and release tags always run the full
 pipeline. New commits cancel obsolete validation runs, while release runs finish.

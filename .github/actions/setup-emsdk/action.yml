@@ -9,7 +9,7 @@ runs:
       run: |
         git submodule update --init --depth 1 emsdk
         echo "revision=$(git rev-parse HEAD:emsdk)" >> "$GITHUB_OUTPUT"
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@v6
       id: cache
       with:
         path: |
@@ -19,7 +19,7 @@ runs:
     - name: Activate Emscripten
       shell: bash
       run: ./build.sh emsdk
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@v6
       if: steps.cache.outputs.cache-hit != 'true'
       with:
         path: |

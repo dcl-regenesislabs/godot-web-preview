@@ -53,7 +53,7 @@ jobs:
   engine:
     needs: checks
     if: needs.checks.outputs.build == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       JOBS: 3
@@ -68,7 +68,7 @@ jobs:
         run: |
           echo "revision=$(git rev-parse HEAD:godotengine)" >> "$GITHUB_OUTPUT"
           echo "emsdk=$(git rev-parse HEAD:emsdk)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         id: template
         with:
           path: godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
@@ -87,12 +87,12 @@ jobs:
           python -m pip install "scons==$SCONS_VERSION"
           ./build.sh engine
       - name: Save engine before downstream checks
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         if: steps.template.outputs.cache-hit != 'true'
         with:
           path: godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
           key: ${{ steps.template.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: engine-template
           path: godotengine/bin/godot.web.template_debug.wasm32.nothreads.dlink.zip
@@ -102,7 +102,7 @@ jobs:
   runtime:
     needs: checks
     if: needs.checks.outputs.build == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     env:
       JOBS: 3
@@ -124,7 +124,7 @@ jobs:
           workspaces: |
             godot-explorer -> target
             godot-explorer/lib -> target
-          key: preview-nightly-2026-09-15-${{ hashFiles('build.sh', 'godot-explorer/web/wasm-env.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}
+          key: preview-macos-15-nightly-2026-09-15-${{ hashFiles('build.sh', 'godot-explorer/web/wasm-env.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}
           cache-on-failure: true
           cache-bin: false
       - uses: ./.github/actions/setup-emsdk
@@ -144,7 +144,7 @@ jobs:
             godot-explorer/godot/addons/sentry/bin/web \
             godot-explorer/lib/target/libdclgodot_macos/libdclgodot.dylib \
             godot-explorer/lib/target/wasm32-unknown-emscripten/release/dclgodot.wasm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: runtime-inputs
           path: ${{ runner.temp }}/runtime-inputs.tar.gz
@@ -153,7 +153,7 @@ jobs:
           retention-days: 2
   build:
     needs: [engine, runtime]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     env:
       BUILD_PRIORITY: normal
@@ -167,11 +167,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: engine-template
           path: godotengine/bin
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: runtime-inputs
           path: ${{ runner.temp }}
@@ -186,19 +186,19 @@ jobs:
           ./build.sh test webgpu-buffer-coherence
       - name: Check content thread guards
         run: node --test godot-explorer/web/tools/thread-safety.test.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mobile-preview-export
           path: godot-explorer/build/web/
           if-no-files-found: error
           retention-days: 14
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: webgpu-regressions
           path: tests/*/build/
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: export-logs
@@ -216,7 +216,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: webgpu-regressions
           path: tests
@@ -228,7 +228,7 @@ jobs:
           xvfb-run -a node godot-explorer/web/tools/run-web.mjs tests/webgpu-texture-roundtrip/build 90 texture.png --ci --headed --assert=textureRoundtripResult
           xvfb-run -a node godot-explorer/web/tools/run-web.mjs tests/webgpu-buffer-coherence/build 90 buffers.png --ci --headed --assert=bufferCoherenceResult
           xvfb-run -a node godot-explorer/web/tools/run-web.mjs tests/webgpu-frame-pacing/build 90 pacing.png --ci --headed --assert=framePacingResult
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: regression-screenshots
@@ -244,14 +244,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: mobile-preview-export
           path: runtime-export
       - run: npm test --prefix packages/runtime
       - run: npm run build --prefix packages/runtime -- "$GITHUB_WORKSPACE/runtime-export"
       - run: npm pack ./packages/runtime
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mobile-preview-npm
           path: dcl-regenesislabs-mobile-preview-runtime-*.tgz
@@ -298,7 +298,7 @@ jobs:
           package-manager-cache: false
       - name: Install npm with OIDC dist-tag support
         run: npm install --global npm@11.21.0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: mobile-preview-npm
           path: release

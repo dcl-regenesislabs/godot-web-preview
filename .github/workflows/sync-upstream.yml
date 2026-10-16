@@ -73,7 +73,7 @@ jobs:
           gh workflow run preview.yml --ref "$SYNC_BRANCH" -f native-compatibility=true
       - name: Keep the update plan
         if: always() && steps.pending.outputs.count == '0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: upstream-update
           path: ${{ runner.temp }}/upstream-update.json
