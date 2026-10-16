@@ -47,13 +47,18 @@ test('invalid build settings fail before starting a compiler', async t => {
   }
 })
 
-test('native compatibility checks find the downloaded protoc on a clean runner', async t => {
+test('host tests find protoc and only compile Deno when explicitly requested', async t => {
   const f = await fixture(t)
   await f.write('godot-explorer/.bin/protoc/bin/protoc', 'echo fixture-protoc')
   await f.write('bin/cargo', 'test "$(protoc --version)" = fixture-protoc; echo "$*" >> "$BUILD_LOG"')
-  const result = f.run('scripts/check-native.sh', [], { JOBS: '3' })
+  const result = f.run('scripts/check-native.sh', [], { JOBS: '3', CHECK_NATIVE_COMPATIBILITY: 'false' })
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /fixture-protoc/)
+  assert.equal((await f.log()).trim().split('\n').length, 2)
+  assert.doesNotMatch(await f.log(), /use_deno/)
+  await writeFile(path.join(f.root, 'commands.log'), '')
+  const native = f.run('scripts/check-native.sh', [], { JOBS: '3', CHECK_NATIVE_COMPATIBILITY: 'true' })
+  assert.equal(native.status, 0, native.stderr)
   assert.equal((await f.log()).trim().split('\n').length, 3)
   assert.match(await f.log(), /check --locked --no-default-features --features use_deno -j 3/)
 })

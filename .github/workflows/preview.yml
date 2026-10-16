@@ -6,6 +6,11 @@ on:
     branches: [main]
     tags: ['[0-9]*']
   workflow_dispatch:
+    inputs:
+      native-compatibility:
+        description: Also check upstream native Deno compatibility
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -127,7 +132,9 @@ jobs:
         run: ./build.sh native
       - name: Build web extension
         run: ./build.sh wasm
-      - name: Check gameplay, Pulse and native compatibility
+      - name: Check gameplay and Pulse
+        env:
+          CHECK_NATIVE_COMPATIBILITY: ${{ inputs.native-compatibility || false }}
         run: bash scripts/check-native.sh
       - name: Archive export inputs
         run: |

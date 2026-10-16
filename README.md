@@ -136,8 +136,14 @@ CI runs unit tests and dependency audits first, then builds the engine and Rust 
 in parallel on separate three-core macOS runners.
 Dedicated runners use normal CPU priority; local builds keep their two-job,
 background defaults. Export runs on macOS after both builds and the native
-gameplay/Pulse/compatibility checks pass. Texture, buffer and frame-pacing
+gameplay/Pulse checks pass. Texture, buffer and frame-pacing
 regressions run in Linux Chromium with SwiftShader before packaging.
+
+The native Rust library is a temporary export tool: the headless Godot editor
+loads its custom classes when importing assets and creating the `.pck`. Only the
+web runtime is packaged for npm. Native Deno compatibility is outside the normal
+web release path; upstream syncs enable it, and manual runs can opt in with the
+`native-compatibility` input.
 
 The engine ZIP is cached by source tree and toolchain inputs and saved immediately
 after compilation. Emscripten installations and Cargo dependencies are cached too;

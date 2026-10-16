@@ -70,7 +70,7 @@ jobs:
           - Check the Mobile preview workflow's build, audit and browser regression results before marking ready.
           BODY
           gh pr create --base main --head "$SYNC_BRANCH" --draft --title 'Sync preview with the mobile app' --body-file "$RUNNER_TEMP/upstream-pr.md"
-          gh workflow run preview.yml --ref "$SYNC_BRANCH"
+          gh workflow run preview.yml --ref "$SYNC_BRANCH" -f native-compatibility=true
       - name: Keep the update plan
         if: always() && steps.pending.outputs.count == '0'
         uses: actions/upload-artifact@v4
