@@ -156,8 +156,8 @@ Cargo caches are saved only after a successful job so a cancelled build cannot
 leave an incomplete cache under the final key. Rust still rebuilds the workspace
 crates. Documentation-only changes skip
 compilation and packaging; manual runs and release tags always run the full
-pipeline. New commits cancel obsolete pull request runs; `main`, tag and manual runs
-queue and finish, so a publish is never interrupted.
+pipeline. New commits cancel obsolete pull request runs. A running `main`, tag or
+manual run is never interrupted; a run still waiting is superseded by the newest push.
 Cold and cached build times differ; use the separate Actions steps to measure both.
 Use `validate` as the required branch check: it accepts documentation-only runs
 and requires every build, audit and regression job for runtime changes.
