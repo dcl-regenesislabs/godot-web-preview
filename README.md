@@ -104,8 +104,10 @@ before packaging an editor runtime.
 | GDScript, HTML or assets | `./build.sh preview` |
 
 Do not commit generated binaries. See [developer build notes](CLAUDE.md) for
-compiler constraints and [the browser report](godot-explorer/web/REPORT.md) for
-historical measurements and remaining implementation gaps.
+compiler constraints and [WebGPU porting lessons](docs/WEBGPU-PORTING.md) for
+confirmed rendering fixes, memory limits, host integration and scene behavior.
+The [original browser report](godot-explorer/web/REPORT.md) preserves historical
+measurements from the first spike.
 
 ## Validate
 

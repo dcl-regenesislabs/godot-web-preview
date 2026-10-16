@@ -12,7 +12,9 @@ Guidance for working in this repo: the Decentraland Godot explorer running in th
 - **Explorer:** the Rust library `dclgodot` built for `wasm32-unknown-emscripten`, loaded as a GDExtension
   side module.
 - **Scenes:** scene JS runs in one Web Worker per scene, in place of deno/V8.
-- **Findings, gaps and risks:** `godot-explorer/web/REPORT.md`.
+- **Porting lessons, regressions and remaining risks:** [docs/WEBGPU-PORTING.md](docs/WEBGPU-PORTING.md).
+  `godot-explorer/web/REPORT.md` is the historical spike report; its measurements
+  and some limitations predate the local-preview fixes.
 
 **Settings not to "fix" without a reason:**
 - **`threads=no`:** threads need COOP/COEP cross-origin isolation, and the driver assumes main-thread
@@ -153,9 +155,16 @@ or `target/` output. User instructions about committing or pushing are authorita
   and locale are supported. Portable experiences, file reads and wallet utilities
   remain excluded. Local preview scene messages use browser LiveKit; Pulse carries
   player state through WebTransport.
-- **Compiled out:** native voice/LiveKit, video, and Sentry. Pulse uses browser WebTransport.
-- **Content cache:** it lives in memory (Emscripten MEMFS).
+- **Excluded from the browser runtime:** native Deno/V8, native voice/LiveKit and
+  video. Local preview disables telemetry startup. Pulse uses browser WebTransport.
+- **Content cache:** it lives in memory (Emscripten MEMFS). Local preview targets
+  128 MiB of cached files and disables persistent-path restoration; this is not a
+  total-memory cap. Minimizing preserves the runtime's allocations.
 - **CORS:** `marketing-files.decentraland.org` only allows `https://decentraland.org`, so in-world banners
   fail elsewhere.
 - **Engine:** a scene UBO size mismatch shows up only in the sky + glow smoke test.
-- **Coverage:** only tested in Chrome on macOS (Apple M4 Pro).
+- **Coverage:** interactive testing used Chrome/Brave on macOS (Apple M4 Pro).
+  Linux Chromium with SwiftShader also runs the texture, buffer and frame-pacing
+  regressions. Neither establishes native phone performance or long-session stability.
+- **Isolation:** scene Workers still expose browser globals. The separate preview
+  origin and restricted host relay do not make the Worker a hardened sandbox.
