@@ -3,14 +3,20 @@
 #   ./build.sh                 every step: emsdk engine native wasm export
 #   ./build.sh engine wasm     only those steps
 #   ./build.sh test <project>  export tests/<project> to tests/<project>/build
-# Builds run in the background with 2 jobs so the machine stays usable (JOBS=N to change).
+# Local builds default to two background jobs; CI sets JOBS and BUILD_PRIORITY.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 JOBS=${JOBS:-2}
+BUILD_PRIORITY=${BUILD_PRIORITY:-background}
+case "$JOBS" in ''|*[!0-9]*|0) echo 'JOBS must be a positive integer' >&2; exit 1 ;; esac
 export EMCC_CORES=$JOBS
 export BINARYEN_CORES=$JOBS
-# macOS background QoS keeps the build on the efficiency cores; elsewhere just lower the priority.
-if command -v taskpolicy >/dev/null; then LOWPRI="taskpolicy -c background nice -n 19"; else LOWPRI="nice -n 19"; fi
+case "$BUILD_PRIORITY" in
+  background)
+    if command -v taskpolicy >/dev/null; then LOWPRI=(taskpolicy -c background nice -n 19); else LOWPRI=(nice -n 19); fi ;;
+  normal) LOWPRI=(env) ;;
+  *) echo 'BUILD_PRIORITY must be background or normal' >&2; exit 1 ;;
+esac
 EMSDK_VERSION=4.0.11
 NIGHTLY=nightly-2026-09-15
 cd "$ROOT"
@@ -44,13 +50,13 @@ step_engine() {
   emsdk_python
   log "engine web template (godotengine/bin)"
   (cd godotengine && source ../emsdk/emsdk_env.sh >/dev/null &&
-    $LOWPRI scons platform=web target=template_debug dlink_enabled=yes webgpu=yes webgpu_precompile_shaders=no opengl3=no threads=no -j"$JOBS")
+    "${LOWPRI[@]}" scons platform=web target=template_debug dlink_enabled=yes webgpu=yes webgpu_precompile_shaders=no opengl3=no threads=no -j"$JOBS")
 }
 
 step_native() {
   log "explorer editor + native library"
-  (cd godot-explorer && CARGO_BUILD_JOBS=$JOBS $LOWPRI cargo run -- install --no-templates &&
-    CARGO_BUILD_JOBS=$JOBS $LOWPRI cargo run -- build --no-default-features)
+  (cd godot-explorer && CARGO_BUILD_JOBS=$JOBS "${LOWPRI[@]}" cargo run -- install --no-templates &&
+    CARGO_BUILD_JOBS=$JOBS "${LOWPRI[@]}" cargo run -- build --no-default-features)
 }
 
 step_wasm() {
@@ -59,7 +65,7 @@ step_wasm() {
   rustup toolchain list | grep -q "$NIGHTLY" || rustup toolchain install "$NIGHTLY" --component rust-src
   (cd godot-explorer/lib && source ../web/wasm-env.sh &&
     CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true CARGO_PROFILE_RELEASE_LTO=false \
-    $LOWPRI cargo +"$NIGHTLY" build -j "$JOBS" --release -Zbuild-std=std,panic_abort \
+    "${LOWPRI[@]}" cargo +"$NIGHTLY" build -j "$JOBS" --release -Zbuild-std=std,panic_abort \
       --target wasm32-unknown-emscripten --no-default-features --features use_pulse)
 }
 
@@ -79,12 +85,12 @@ step_test() {
   log "export tests/$project"
   if [ -f "$dir/gdext_hello.gdextension" ]; then
     (cd tests/gdext-hello && source "$ROOT/godot-explorer/web/wasm-env.sh" &&
-      $LOWPRI cargo +"$NIGHTLY" build -j "$JOBS" --release --target wasm32-unknown-emscripten)
+      "${LOWPRI[@]}" cargo +"$NIGHTLY" build -j "$JOBS" --release --target wasm32-unknown-emscripten)
     mkdir -p "$dir/bin" && cp tests/gdext-hello/target/wasm32-unknown-emscripten/release/gdext_hello.wasm "$dir/bin/"
   fi
   mkdir -p "$dir/build"
   local log_file="$dir/build/export.log"
-  if ! (cd "$dir" && $LOWPRI "$ROOT/godot-explorer/.bin/godot/godot4_bin" --headless --path . --export-debug web build/index.html) > "$log_file" 2>&1; then
+  if ! (cd "$dir" && "${LOWPRI[@]}" "$ROOT/godot-explorer/.bin/godot/godot4_bin" --headless --path . --export-debug web build/index.html) > "$log_file" 2>&1; then
     tail -n 60 "$log_file"
     exit 1
   fi

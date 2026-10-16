@@ -30,7 +30,8 @@ The first complete build was started in
 Remaining release setup:
 
 1. Configure branch protection and require
-   the build, browser and package checks. Allow merge commits for subtree update
+   the `validate` job, which rejects failures or skipped builds unless only docs
+   changed. Allow merge commits for subtree update
    PRs; do not require linear history. Run the complete Mobile preview workflow
    from the new repository before the first release.
 2. Verify Actions can create PRs for the daily updater. Protect the `production`

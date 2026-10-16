@@ -11,7 +11,7 @@ concurrency:
 jobs:
   sync:
     if: github.repository == 'dcl-regenesislabs/godot-web-preview' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write
@@ -70,10 +70,10 @@ jobs:
           - Check the Mobile preview workflow's build, audit and browser regression results before marking ready.
           BODY
           gh pr create --base main --head "$SYNC_BRANCH" --draft --title 'Sync preview with the mobile app' --body-file "$RUNNER_TEMP/upstream-pr.md"
-          gh workflow run preview.yml --ref "$SYNC_BRANCH"
+          gh workflow run preview.yml --ref "$SYNC_BRANCH" -f native-compatibility=true
       - name: Keep the update plan
         if: always() && steps.pending.outputs.count == '0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: upstream-update
           path: ${{ runner.temp }}/upstream-update.json

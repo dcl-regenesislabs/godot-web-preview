@@ -1,0 +1,28 @@
+name: Set up cached Emscripten
+description: Restore the pinned SDK and apply the browser side-module patch
+runs:
+  using: composite
+  steps:
+    - name: Initialize SDK checkout
+      id: sdk
+      shell: bash
+      run: |
+        git submodule update --init --depth 1 emsdk
+        echo "revision=$(git rev-parse HEAD:emsdk)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v6
+      id: cache
+      with:
+        path: |
+          emsdk/upstream
+          emsdk/node
+        key: emsdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.sdk.outputs.revision }}-${{ hashFiles('build.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}-v1
+    - name: Activate Emscripten
+      shell: bash
+      run: ./build.sh emsdk
+    - uses: actions/cache/save@v6
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: |
+          emsdk/upstream
+          emsdk/node
+        key: ${{ steps.cache.outputs.cache-primary-key }}

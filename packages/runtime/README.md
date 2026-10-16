@@ -22,8 +22,13 @@ Packing verifies the complete artifact inventory and rejects modified, missing,
 unlisted or symlinked files. Generated files and tarballs are ignored by Git.
 Applications provide their own scene relay, capture adapter and asset server.
 
-The `preview.yml` workflow builds and tests every PR/main change and creates an
-npm tarball after all three browser graphics regressions pass. A stable `X.Y.Z`
+The `preview.yml` workflow tests and audits every PR/main change. Changes beyond
+documentation also build the runtime and create the `mobile-preview-npm` artifact
+(retained for 14 days). Extracting its tarball exposes the web files in
+`package/dist/`; there is no duplicate raw-export artifact. All three browser
+graphics regressions and package verification must pass before the run is accepted
+or a release can publish. Manual runs and release tags always build.
+A stable `X.Y.Z`
 tag matching `package.json` publishes through
 [Decentraland's Oddish Action](https://github.com/decentraland/oddish-action), pinned
 to a reviewed commit, using npm OIDC on a GitHub-hosted runner. The workflow
@@ -45,9 +50,9 @@ repository and its build. See [npm's trusted publishing guide](https://docs.npmj
 For the first release, a maintainer must bootstrap the package name and register
 the trusted publisher before tagging the first OIDC release. Reserve `0.1.0` for
 CI: use a separate bootstrap prerelease and dist-tag, such as
-`0.0.0-bootstrap.0` on `bootstrap`, for the initial manual publication. The package is not
-currently published; consumers targeting `0.1.0` cannot install it until that
-release exists. Approve the complete CI run and configure the GitHub `production`
+`0.0.0-bootstrap.0` on `bootstrap`, for the initial manual publication. The package is
+published as a bootstrap placeholder; consumers targeting `0.1.0` cannot install
+the runtime until that release exists. Approve the complete CI run and configure the GitHub `production`
 environment's release reviewers before releasing. Publish source/runtime first,
 then refresh the consumer's lockfile to record the registry tarball integrity
 before merging the consumer update.

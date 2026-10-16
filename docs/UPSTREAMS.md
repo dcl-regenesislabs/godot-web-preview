@@ -56,7 +56,8 @@ no PR and no expensive build. Conflicts fail the sync job for investigation.
 Allow GitHub Actions to create pull requests in repository settings. The sync job
 uses the repository's temporary `GITHUB_TOKEN` for branch/PR creation and workflow
 dispatch; it has no npm publishing permissions. Build jobs use read-only tokens,
-and only the tag release job requests OIDC credentials. No PAT or
+and only the tag release job requests OIDC credentials. Sync validation also
+enables the optional native Deno compatibility check. No PAT or
 `GODOT_SOURCE_TOKEN` is needed. Approve any additional PR workflow runs GitHub holds
 for approval, and review the dispatched validation run before merging.
 

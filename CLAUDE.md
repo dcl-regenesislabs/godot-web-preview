@@ -57,9 +57,10 @@ The scripts expect these three folders side by side; they find each other by rel
 - **Rebuilds:** after changing engine C++, run `./build.sh engine export`. After changing explorer Rust or
   `scene_worker.js`, run `./build.sh wasm export`. After GDScript or asset changes, `./build.sh export` (or `./build.sh preview` for the editor) is enough.
   Export imports assets first and rejects script/resource errors even if Godot exits zero.
-- **CPU:** builds run with 2 jobs, under `nice -n 19` and, on macOS, `taskpolicy -c background`
+- **CPU:** local builds run with 2 jobs, under `nice -n 19` and, on macOS, `taskpolicy -c background`
   (efficiency cores only), so the machine stays usable. `JOBS=N` changes the job count. Run any manual
-  build the same way: never at full parallelism.
+  local build the same way: never at full parallelism. Dedicated CI runners set
+  `BUILD_PRIORITY=normal` and use their three available macOS cores.
 - **Explorer args:** `EXPLORER_ARGS="--skip-lobby --guest-profile --realm=https://realm-provider-ea.decentraland.org/main --location=52,-52" ./build.sh export`
   changes the args baked into `index.html`. Without `--realm=` the explorer opens its default test realm,
   not Genesis City. `--guest-profile` is needed: it creates a disposable wallet,
