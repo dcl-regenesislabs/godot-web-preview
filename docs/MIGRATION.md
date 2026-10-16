@@ -34,16 +34,19 @@ Remaining release setup:
    changed. Allow merge commits for subtree update
    PRs; do not require linear history. Run the complete Mobile preview workflow
    from the new repository before the first release.
-2. Verify Actions can create PRs for the daily updater. Protect the `production`
-   environment with release reviewers.
+2. Verify Actions can create PRs for the daily updater. Leave the `production`
+   environment without required reviewers: every `main` push publishes a `next`
+   snapshot through it.
 3. Bootstrap the npm package if needed and configure its trusted publisher with
    organization `dcl-regenesislabs`, repository `godot-web-preview`, workflow
    `preview.yml`, environment `production`. See the runtime README.
-4. Publish a matching numeric version tag (`0.1.0`, without `v`) only after validation
-   and release approval. Oddish publishes it using OIDC. Then
-   refresh the consuming editor's registry lockfile.
+4. Merge to `main`; its run publishes a `next` snapshot through OIDC. Push a matching
+   numeric tag (`0.1.0`, without `v`) only when a stable `latest` release is wanted.
+   Then refresh the consuming editor's registry lockfile with the exact published
+   version.
 
-No npm release has been published. Source tree equality and local script/package
+No stable release has been published; `next` snapshots start with the first `main`
+run that includes the publish job change. Source tree equality and local script/package
 tests do not substitute for the first complete build in the new GitHub repository.
 
 ## Local validation
