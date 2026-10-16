@@ -149,7 +149,9 @@ web release path; upstream syncs enable it, and manual runs can opt in with the
 The engine ZIP is cached by source tree and toolchain inputs and saved immediately
 after compilation. Emscripten installations and Cargo dependencies are cached too;
 native dependencies use a separate cache when the macOS runner changes.
-Rust still rebuilds the workspace crates. Documentation-only changes skip
+Cargo caches are saved only after a successful job so a cancelled build cannot
+leave an incomplete cache under the final key. Rust still rebuilds the workspace
+crates. Documentation-only changes skip
 compilation and packaging; manual runs and release tags always run the full
 pipeline. New commits cancel obsolete validation runs, while release runs finish.
 Cold and cached build times differ; use the separate Actions steps to measure both.

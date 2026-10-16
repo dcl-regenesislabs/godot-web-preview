@@ -124,8 +124,7 @@ jobs:
           workspaces: |
             godot-explorer -> target
             godot-explorer/lib -> target
-          key: preview-macos-15-nightly-2026-09-15-${{ hashFiles('build.sh', 'godot-explorer/web/wasm-env.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}
-          cache-on-failure: true
+          key: preview-macos-15-v2-nightly-2026-09-15-${{ hashFiles('build.sh', 'godot-explorer/web/wasm-env.sh', 'godot-explorer/web/emsdk-side-module-exports.patch') }}
           cache-bin: false
       - uses: ./.github/actions/setup-emsdk
       - name: Build native importer
